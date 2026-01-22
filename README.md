@@ -1,0 +1,198 @@
+# UptimeBot - 网站监控工具
+
+一个简洁高效的网站监控工具，支持 HTTP、TCP 端口和 ICMP Ping 检测。
+
+![UptimeBot](https://img.shields.io/badge/version-1.0.0-blue)
+![Node.js](https://img.shields.io/badge/node-%3E%3D16.0.0-green)
+![License](https://img.shields.io/badge/license-Luminous-orange)
+
+## ✨ 功能特性
+
+- 🌐 **HTTP(S) 检测** - 监控网站 HTTP/HTTPS 响应状态
+- 🔌 **TCP 端口检测** - 检测指定端口是否开放
+- 📡 **ICMP Ping 检测** - 检测主机是否可达
+- 🎨 **安装向导** - 首次启动引导配置数据库和管理员
+- 🔐 **用户认证** - JWT 登录认证，保护监控数据
+- 📊 **实时仪表板** - 直观展示所有监控状态
+- 📈 **历史记录** - 查看检测历史和响应时间趋势
+- ⏰ **自动检测** - 可配置检测间隔（10秒-1小时）
+- 📱 **响应式设计** - 支持桌面和移动设备
+- 🐳 **Docker 支持** - 一键部署，开箱即用
+
+## 🚀 快速开始
+
+### Docker 部署（推荐）
+
+```bash
+# 1. 克隆项目
+git clone <your-repo-url>
+cd uptime-monitor
+
+# 2. 配置环境变量（可选）
+cp env.sample .env
+# 编辑 .env 文件修改密码等配置
+
+# 3. 启动服务
+docker-compose up -d
+
+# 4. 访问应用
+# 打开浏览器访问 http://localhost:3000
+```
+
+**首次访问配置**（使用 Docker 时）：
+- 数据库主机: `mysql`
+- 数据库端口: `3306`
+- 数据库名: `uptimebot`
+- 数据库用户: `uptimebot`
+- 数据库密码: 查看 `.env` 文件中的 `MYSQL_PASSWORD`
+
+### 手动部署
+
+```bash
+# 1. 安装依赖
+npm install
+
+# 2. 启动服务
+npm start
+
+# 3. 访问 http://localhost:3000
+# 首次访问将进入安装向导
+```
+
+> 📖 详细部署说明请查看 [DEPLOYMENT.md](DEPLOYMENT.md)
+
+## 📚 使用说明
+
+### 添加监控
+
+1. 登录后点击「添加监控」
+2. 选择监控类型（HTTP / TCP / Ping）
+3. 配置目标地址和检测参数
+4. 保存
+
+### 监控类型说明
+
+| 类型 | 示例 | 说明 |
+|------|------|------|
+| HTTP(S) | `https://example.com` | 监控网站可用性和响应时间 |
+| TCP 端口 | `example.com:3306` | 检测端口是否开放（如数据库、Redis） |
+| ICMP Ping | `8.8.8.8` | 检测主机是否可达 |
+
+### 查看监控数据
+
+- **实时状态**: 主页面展示所有监控的实时状态
+- **24小时可用率**: 每个监控显示24小时可用率和状态条
+- **历史记录**: 点击监控项查看详细历史和图表
+- **统计信息**: 查看响应时间、可用率等统计数据
+
+## 🛠️ 技术栈
+
+- **后端**: Node.js + Express
+- **数据库**: MySQL 8.0
+- **认证**: JWT + bcrypt
+- **前端**: 原生 HTML/CSS/JavaScript
+- **图表**: Chart.js
+- **部署**: Docker + Docker Compose
+
+## 📁 项目结构
+
+```
+uptime-monitor/
+├── server/              # 后端代码
+│   └── server.js        # 主服务文件
+├── public/              # 前端静态文件
+│   ├── index.html       # 管理页面
+│   ├── public.html      # 公开展示页
+│   ├── setup.html       # 安装向导
+│   ├── app.js           # 前端逻辑
+│   └── style.css        # 样式文件
+├── docker-compose.yml   # Docker Compose 配置
+├── Dockerfile           # Docker 镜像配置
+├── env.sample           # 环境变量示例
+├── package.json         # 项目依赖
+└── DEPLOYMENT.md        # 详细部署文档
+```
+
+## ⚙️ 环境变量
+
+主要配置项（详见 `env.sample`）：
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `APP_PORT` | 应用访问端口 | `3000` |
+| `JWT_SECRET` | JWT 密钥 | `change-this-secret-in-production` |
+| `MYSQL_ROOT_PASSWORD` | MySQL root 密码 | `uptimebot_root_password` |
+| `MYSQL_DATABASE` | 数据库名 | `uptimebot` |
+| `MYSQL_USER` | 数据库用户 | `uptimebot` |
+| `MYSQL_PASSWORD` | 数据库密码 | `uptimebot_password` |
+| `TZ` | 时区 | `Asia/Shanghai` |
+
+> ⚠️ **安全提示**: 生产环境请务必修改所有默认密码！
+
+## 🔧 常用命令
+
+```bash
+# Docker 相关
+docker-compose up -d          # 启动服务
+docker-compose down           # 停止服务
+docker-compose logs -f app    # 查看日志
+docker-compose restart        # 重启服务
+
+# Node.js 相关
+npm start                     # 启动应用
+npm install                   # 安装依赖
+```
+
+## 📊 API 接口
+
+所有 API 接口需要登录认证（除安装接口）。
+
+### 主要接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/auth/login` | 用户登录 |
+| GET | `/api/monitors` | 获取所有监控 |
+| POST | `/api/monitors` | 创建监控 |
+| PUT | `/api/monitors/:id` | 更新监控 |
+| DELETE | `/api/monitors/:id` | 删除监控 |
+| POST | `/api/monitors/:id/check` | 手动检测 |
+| GET | `/api/monitors/:id/history` | 获取历史记录 |
+| GET | `/api/stats` | 获取统计数据 |
+
+完整 API 文档请查看源码注释。
+
+## 🔒 安全建议
+
+- ✅ 修改所有默认密码
+- ✅ 使用 HTTPS（配置反向代理）
+- ✅ 定期更新依赖包
+- ✅ 定期备份数据库
+- ✅ 限制数据库端口访问
+- ✅ 启用防火墙
+
+## 📝 许可证
+
+本项目使用 **Luminous License** 许可证。
+
+主要条款：
+- ✅ 个人和商业用途均可免费使用
+- ✅ 必须保留原始版权声明和许可声明
+- ✅ 使用本项目代码必须标注来源
+- ⚠️ 盈利性使用需获得作者书面同意
+- ⚠️ 不得作为商业产品分发
+
+详细内容请查看 [LICENSE](LICENSE) 文件。
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+## 📮 联系方式
+
+如有问题或建议，请提交 Issue 或联系项目维护者。
+
+---
+
+**项目版本**: 1.0.0  
+**最后更新**: 2025-01

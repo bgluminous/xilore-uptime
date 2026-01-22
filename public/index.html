@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Xilore UptimeBot - 网站监控</title>
+  <link rel="icon" href="/favicon.svg?v=1" type="image/svg+xml">
+  <link rel="icon" href="/favicon.ico?v=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 安装向导 -->
+  <div id="setup-wizard" class="setup-container" style="display: none;">
+    <div class="setup-card">
+      <div class="setup-header">
+        <div class="logo-icon">
+          <img src="/favicon.png" alt="Xilore UptimeBot" width="28" height="28">
+        </div>
+        <h1>Xilore UptimeBot</h1>
+        <p>安装向导</p>
+      </div>
+      
+      <div class="setup-steps">
+        <div class="step active" data-step="1">
+          <div class="step-number">1</div>
+          <span>数据库</span>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" data-step="2">
+          <div class="step-number">2</div>
+          <span>管理员</span>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" data-step="3">
+          <div class="step-number">3</div>
+          <span>完成</span>
+        </div>
+      </div>
+      
+      <!-- 步骤1: 数据库配置 -->
+      <div class="setup-step-content active" id="step-1">
+        <h2>数据库配置</h2>
+        <p class="step-desc">请输入 MySQL 数据库连接信息</p>
+        
+        <form id="db-form">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="db-host">主机地址</label>
+              <input type="text" id="db-host" value="localhost" required>
+            </div>
+            <div class="form-group" style="max-width: 120px;">
+              <label for="db-port">端口</label>
+              <input type="number" id="db-port" value="3306" required>
+            </div>
+          </div>
+          
+          <div class="form-group">
+            <label for="db-name">数据库名</label>
+            <input type="text" id="db-name" value="uptimebot" required placeholder="数据库将自动创建">
+          </div>
+          
+          <div class="form-group">
+            <label for="db-user">用户名</label>
+            <input type="text" id="db-user" value="root" required>
+          </div>
+          
+          <div class="form-group">
+            <label for="db-password">密码</label>
+            <input type="password" id="db-password" placeholder="数据库密码">
+          </div>
+          
+          <div class="form-actions">
+            <button type="button" class="btn-secondary" onclick="setup.testDatabase()">测试连接</button>
+            <button type="submit" class="btn-primary" disabled id="btn-step1-next">下一步</button>
+          </div>
+        </form>
+        
+        <div class="test-result" id="db-test-result"></div>
+      </div>
+      
+      <!-- 步骤2: 管理员账户 -->
+      <div class="setup-step-content" id="step-2">
+        <h2>创建管理员账户</h2>
+        <p class="step-desc">设置系统管理员的登录信息</p>
+        
+        <form id="admin-form">
+          <div class="form-group">
+            <label for="admin-username">用户名</label>
+            <input type="text" id="admin-username" required minlength="3" placeholder="至少3个字符">
+          </div>
+          
+          <div class="form-group">
+            <label for="admin-email">邮箱（可选）</label>
+            <input type="email" id="admin-email" placeholder="用于接收通知">
+          </div>
+          
+          <div class="form-group">
+            <label for="admin-password">密码</label>
+            <input type="password" id="admin-password" required minlength="6" placeholder="至少6个字符">
+          </div>
+          
+          <div class="form-group">
+            <label for="admin-password-confirm">确认密码</label>
+            <input type="password" id="admin-password-confirm" required placeholder="再次输入密码">
+          </div>
+          
+          <div class="form-actions">
+            <button type="button" class="btn-secondary" onclick="setup.prevStep()">上一步</button>
+            <button type="submit" class="btn-primary">完成安装</button>
+          </div>
+        </form>
+      </div>
+      
+      <!-- 步骤3: 完成 -->
+      <div class="setup-step-content" id="step-3">
+        <div class="setup-complete">
+          <div class="success-icon">✓</div>
+          <h2>安装完成</h2>
+          <p id="setup-complete-msg">Xilore UptimeBot 已成功安装</p>
+          <button class="btn-primary" onclick="location.reload()">进入系统</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- 登录页面 -->
+  <div id="login-page" class="login-container" style="display: none;">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="logo-icon">
+          <img src="/favicon.svg?v=1" alt="Xilore UptimeBot" width="28" height="28">
+        </div>
+        <h1>Xilore UptimeBot</h1>
+      </div>
+      
+      <form id="login-form" onsubmit="auth.login(event)">
+        <div class="form-group">
+          <label for="login-username">用户名</label>
+          <input type="text" id="login-username" required autofocus>
+        </div>
+        
+        <div class="form-group">
+          <label for="login-password">密码</label>
+          <input type="password" id="login-password" required>
+        </div>
+        
+        <button type="submit" class="btn-primary full-width">登录</button>
+      </form>
+      
+      <div class="login-error" id="login-error"></div>
+    </div>
+  </div>
+  
+  <!-- 主应用 -->
+  <div class="app" id="main-app" style="display: none;">
+    <!-- 顶部导航 -->
+    <header class="top-header">
+      <div class="header-left">
+        <div class="logo">
+          <img src="/favicon.png" alt="Xilore UptimeBot" width="24" height="24">
+          <span>Xilore UptimeBot</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <button class="btn-flat" onclick="app.refreshAll()" id="btn-refresh">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 4v6h-6M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+          </svg>
+          全部检测
+        </button>
+        <button class="btn-flat" onclick="app.showGroupModal()" title="管理分组">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+          </svg>
+          分组
+        </button>
+        <button class="btn-flat" onclick="app.showSettingsModal()" title="设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M12 1v6m0 6v6M5.64 5.64l4.24 4.24m4.24 4.24l4.24 4.24M1 12h6m6 0h6M5.64 18.36l4.24-4.24m4.24-4.24l4.24-4.24"/>
+          </svg>
+          设置
+        </button>
+        <button class="btn-primary" onclick="app.showAddModal()">
+          <span class="btn-icon-inline" id="btn-icon-add"></span> 添加监控
+        </button>
+        <button class="btn-theme" onclick="theme.toggle()" title="切换主题">
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/>
+            <line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
+        <div class="user-menu">
+          <span id="current-user">Admin</span>
+          <button class="btn-text" onclick="auth.logout()">退出</button>
+        </div>
+      </div>
+    </header>
+    
+    <!-- 主内容区 -->
+    <main class="main-content">
+      <!-- 统计卡片 -->
+      <div class="stats-row">
+        <div class="stat-card">
+          <span class="stat-value" id="stat-total">0</span>
+          <span class="stat-label"><span class="stat-icon" id="stat-icon-total"></span> 总监控</span>
+        </div>
+        <div class="stat-card up">
+          <span class="stat-value" id="stat-up">0</span>
+          <span class="stat-label"><span class="stat-icon" id="stat-icon-up"></span> 在线</span>
+        </div>
+        <div class="stat-card down">
+          <span class="stat-value" id="stat-down">0</span>
+          <span class="stat-label"><span class="stat-icon" id="stat-icon-down"></span> 离线</span>
+        </div>
+        <div class="stat-card uptime">
+          <span class="stat-value" id="stat-uptime">-</span>
+          <span class="stat-label"><span class="stat-icon" id="stat-icon-uptime"></span> 24小时平均可用率</span>
+        </div>
+      </div>
+      
+      <!-- 监控列表 -->
+      <div class="monitor-list" id="monitor-list"></div>
+    </main>
+  </div>
+  
+  <!-- 添加/编辑监控模态框 -->
+  <div class="modal-overlay" id="monitor-modal">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="modal-title"><span class="modal-icon" id="modal-icon-title"></span> 添加监控</h2>
+        <button class="btn-close" onclick="app.closeModal()">×</button>
+      </div>
+      
+      <form id="monitor-form" onsubmit="app.saveMonitor(event)">
+        <input type="hidden" id="monitor-id">
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label for="monitor-name">监控名称</label>
+            <input type="text" id="monitor-name" required placeholder="例如：主站点">
+          </div>
+          
+          <div class="form-group">
+            <label for="monitor-group">所属分组</label>
+            <select id="monitor-group">
+              <option value="">未分组</option>
+            </select>
+          </div>
+        </div>
+        
+        <div class="form-group">
+          <label for="monitor-type"><span class="form-icon" id="form-icon-type"></span> 检测类型</label>
+          <select id="monitor-type" required onchange="app.togglePortField()">
+            <option value="http">HTTP(S)</option>
+            <option value="tcp">TCP 端口</option>
+            <option value="ping">ICMP Ping</option>
+          </select>
+        </div>
+        
+        <div class="form-group">
+          <label for="monitor-target"><span class="form-icon" id="form-icon-target"></span> 目标地址</label>
+          <input type="text" id="monitor-target" required placeholder="例如：example.com">
+        </div>
+        
+        <div class="form-group" id="port-group" style="display: none;">
+          <label for="monitor-port">端口号</label>
+          <input type="number" id="monitor-port" min="1" max="65535" placeholder="例如：3306">
+        </div>
+        
+        <div class="form-group" id="expected-status-group">
+          <label for="monitor-expected-status">期望状态码</label>
+          <select id="monitor-expected-status">
+            <option value="200" selected>200 OK</option>
+            <option value="0">任意 2xx</option>
+            <option value="201">201 Created</option>
+            <option value="204">204 No Content</option>
+            <option value="301">301 Moved Permanently</option>
+            <option value="302">302 Found</option>
+            <option value="304">304 Not Modified</option>
+            <option value="400">400 Bad Request</option>
+            <option value="401">401 Unauthorized</option>
+            <option value="403">403 Forbidden</option>
+            <option value="404">404 Not Found</option>
+            <option value="500">500 Internal Server Error</option>
+          </select>
+        </div>
+        
+        <div class="form-group" id="auth-group" style="display: none;">
+          <label style="margin-bottom: 12px; font-weight: 500;">HTTP Basic Authentication（可选）</label>
+          <div class="form-row">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label for="monitor-auth-username" style="font-size: 0.8rem; font-weight: 400;">用户名</label>
+              <input type="text" id="monitor-auth-username" placeholder="用户名">
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label for="monitor-auth-password" style="font-size: 0.8rem; font-weight: 400;">密码</label>
+              <input type="password" id="monitor-auth-password" placeholder="密码">
+            </div>
+          </div>
+        </div>
+        
+        <div class="form-row">
+          <div class="form-group">
+            <label for="monitor-interval"><span class="form-icon" id="form-icon-interval"></span> 检测间隔（秒）</label>
+            <input type="number" id="monitor-interval" value="60" min="10" max="3600">
+          </div>
+          
+          <div class="form-group">
+            <label for="monitor-timeout"><span class="form-icon" id="form-icon-timeout"></span> 超时（秒）</label>
+            <input type="number" id="monitor-timeout" value="10" min="1" max="60">
+          </div>
+        </div>
+        
+        <div class="form-group">
+          <label for="monitor-retries"><span class="form-icon" id="form-icon-retries"></span> 重试次数</label>
+          <select id="monitor-retries">
+            <option value="0" selected>0 次（不重试）</option>
+            <option value="1">1 次</option>
+            <option value="2">2 次</option>
+            <option value="3">3 次</option>
+          </select>
+        </div>
+        
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="monitor-is-public" style="width: auto; margin: 0;">
+            <span>公开展示（无需登录即可查看）</span>
+          </label>
+        </div>
+        
+        <div class="form-actions">
+          <button type="button" class="btn-secondary" onclick="app.closeModal()">取消</button>
+          <button type="submit" class="btn-primary">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  
+  <!-- 监控详情模态框 -->
+  <div class="modal-overlay" id="detail-modal">
+    <div class="modal modal-detail">
+      <div class="modal-header">
+        <div class="detail-header-info">
+          <div class="detail-status" id="detail-status"></div>
+          <div>
+            <h2 id="detail-title">监控详情</h2>
+            <span class="detail-target" id="detail-target"></span>
+          </div>
+        </div>
+        <button class="btn-close" onclick="app.closeDetailModal()">×</button>
+      </div>
+      
+      <div class="detail-content">
+        <!-- 基础信息 -->
+        <div class="detail-info-grid">
+          <div class="detail-info-item">
+            <span class="detail-info-label"><span class="detail-icon" id="detail-icon-type"></span> 类型</span>
+            <span class="detail-info-value" id="detail-type">-</span>
+          </div>
+          <div class="detail-info-item">
+            <span class="detail-info-label"><span class="detail-icon" id="detail-icon-response-time"></span> 响应时间</span>
+            <span class="detail-info-value" id="detail-response-time">-</span>
+          </div>
+          <div class="detail-info-item">
+            <span class="detail-info-label"><span class="detail-icon" id="detail-icon-interval"></span> 检测间隔</span>
+            <span class="detail-info-value" id="detail-interval">-</span>
+          </div>
+          <div class="detail-info-item">
+            <span class="detail-info-label"><span class="detail-icon" id="detail-icon-timeout"></span> 超时设置</span>
+            <span class="detail-info-value" id="detail-timeout">-</span>
+          </div>
+          <div class="detail-info-item">
+            <span class="detail-info-label"><span class="detail-icon" id="detail-icon-retries"></span> 重试次数</span>
+            <span class="detail-info-value" id="detail-retries">-</span>
+          </div>
+          <div class="detail-info-item">
+            <span class="detail-info-label"><span class="detail-icon" id="detail-icon-last-check"></span> 最后检测</span>
+            <span class="detail-info-value" id="detail-last-check">-</span>
+          </div>
+        </div>
+        
+        <!-- 图表区域 -->
+        <div class="detail-chart-section">
+          <div class="detail-chart-header">
+            <h3><span class="detail-icon" id="detail-icon-chart"></span> 响应时间趋势</h3>
+            <div class="time-range-tabs">
+              <button class="time-tab active" data-range="1h">1小时</button>
+              <button class="time-tab" data-range="24h">24小时</button>
+              <button class="time-tab" data-range="7d">7天</button>
+              <button class="time-tab" data-range="30d">30天</button>
+            </div>
+          </div>
+          <div class="detail-chart-container">
+            <canvas id="detail-chart"></canvas>
+          </div>
+          <div class="detail-chart-stats">
+            <div class="chart-stat">
+              <span class="chart-stat-value" id="detail-stat-avg">-</span>
+              <span class="chart-stat-label"><span class="stat-icon" id="detail-stat-icon-avg"></span> 平均响应</span>
+            </div>
+            <div class="chart-stat">
+              <span class="chart-stat-value" id="detail-stat-min">-</span>
+              <span class="chart-stat-label"><span class="stat-icon" id="detail-stat-icon-min"></span> 最快</span>
+            </div>
+            <div class="chart-stat">
+              <span class="chart-stat-value" id="detail-stat-max">-</span>
+              <span class="chart-stat-label"><span class="stat-icon" id="detail-stat-icon-max"></span> 最慢</span>
+            </div>
+            <div class="chart-stat">
+              <span class="chart-stat-value" id="detail-stat-uptime">-</span>
+              <span class="chart-stat-label"><span class="stat-icon" id="detail-stat-icon-uptime"></span> 可用率</span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- 历史记录 -->
+        <div class="detail-history-section">
+          <div class="detail-history-header">
+            <h3><span class="detail-icon" id="detail-icon-records"></span> 检测记录</h3>
+            <button class="btn-text danger" onclick="app.clearHistory(app.currentDetailId)" title="清空历史记录">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+              </svg>
+              清空历史
+            </button>
+          </div>
+          <div class="detail-history-container">
+            <table class="history-table">
+              <thead>
+                <tr>
+                  <th><span class="table-icon" id="table-icon-time"></span> 时间</th>
+                  <th><span class="table-icon" id="table-icon-status"></span> 状态</th>
+                  <th><span class="table-icon" id="table-icon-response-time"></span> 响应时间</th>
+                  <th><span class="table-icon" id="table-icon-message"></span> 消息</th>
+                  <th style="width: 60px;">操作</th>
+                </tr>
+              </thead>
+              <tbody id="detail-history-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      
+      <div class="detail-footer">
+        <button class="btn-secondary" onclick="app.editMonitor(app.currentDetailId)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+          编辑
+        </button>
+        <button class="btn-primary" onclick="app.checkNow(app.currentDetailId)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+            <path d="M23 4v6h-6M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+          </svg>
+          立即检测
+        </button>
+      </div>
+    </div>
+  </div>
+  
+  <!-- 分组管理模态框 -->
+  <div class="modal-overlay" id="group-modal">
+    <div class="modal modal-group">
+      <div class="modal-header">
+        <div class="modal-header-content">
+          <h2><span class="modal-icon" id="modal-icon-group"></span> 分组管理</h2>
+        </div>
+        <button class="btn-close" onclick="app.closeGroupModal()">×</button>
+      </div>
+      
+      <div class="group-modal-content">
+        <div class="group-list" id="group-list"></div>
+        
+        <div class="group-add-section">
+          <div class="group-add-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+            <span>创建新分组</span>
+          </div>
+          <form class="group-add-form" onsubmit="app.addGroup(event)">
+            <div class="group-input-wrapper">
+              <input type="text" id="new-group-name" placeholder="输入分组名称..." required>
+              <button type="submit" class="btn-primary btn-add-group">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                  <line x1="12" y1="5" x2="12" y2="19"/>
+                  <line x1="5" y1="12" x2="19" y2="12"/>
+                </svg>
+                添加
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- 设置模态框 -->
+  <div class="modal-overlay" id="settings-modal">
+    <div class="modal modal-settings">
+      <div class="modal-header">
+        <div class="modal-header-content">
+          <h2><span class="modal-icon" id="modal-icon-settings"></span> 设置</h2>
+        </div>
+        <button class="btn-close" onclick="app.closeSettingsModal()">×</button>
+      </div>
+      
+      <div class="settings-modal-content">
+        <form onsubmit="app.saveSettings(event)">
+          <div class="form-group">
+            <label for="public-page-title">公开展示页面标题</label>
+            <input type="text" id="public-page-title" placeholder="服务状态监控" required>
+            <p class="form-hint">此标题将显示在公开展示页面（/）的顶部</p>
+          </div>
+          
+          <div class="modal-footer">
+            <button type="button" class="btn-secondary" onclick="app.closeSettingsModal()">取消</button>
+            <button type="submit" class="btn-primary">保存</button>
+          </div>
+        </form>
+        
+        <div class="settings-danger-zone">
+          <div class="danger-zone-header">
+            <h3>危险操作</h3>
+          </div>
+          <div class="form-group">
+            <label for="delete-all-history-confirm">删除所有检测历史</label>
+            <p class="form-hint">此操作将永久删除所有监控服务的检测历史记录，且无法恢复。请输入 "DELETE" 以确认。</p>
+            <div class="danger-action-wrapper">
+              <input type="text" id="delete-all-history-confirm" placeholder="输入 DELETE 以确认" autocomplete="off">
+              <button type="button" class="btn-danger" onclick="app.deleteAllHistory()" id="delete-all-history-btn" disabled>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                </svg>
+                删除所有历史
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Toast 通知 -->
+  <div class="toast-container" id="toast-container"></div>
+  
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
