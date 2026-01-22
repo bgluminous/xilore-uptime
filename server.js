@@ -5,6 +5,7 @@ const net = require('net');
 const { exec } = require('child_process');
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -13,7 +14,6 @@ const cookieParser = require('cookie-parser');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const CONFIG_PATH = path.join(__dirname, 'config.json');
-const JWT_SECRET = process.env.JWT_SECRET || 'uptimebot-secret-key-change-in-production';
 
 let pool = null;
 let config = null;
@@ -73,6 +73,27 @@ function loadConfig() {
 function saveConfig(newConfig) {
   config = newConfig;
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+}
+
+// 生成随机 JWT 密钥
+function generateJWTSecret() {
+  return crypto.randomBytes(32).toString('base64');
+}
+
+// 获取 JWT 密钥（优先级：环境变量 > config.json > 默认值）
+function getJWTSecret() {
+  // 优先从环境变量获取
+  if (process.env.JWT_SECRET) {
+    return process.env.JWT_SECRET;
+  }
+  
+  // 从 config.json 获取
+  if (config && config.jwtSecret) {
+    return config.jwtSecret;
+  }
+  
+  // 返回默认值（仅用于开发环境）
+  return 'uptimebot-secret-key-change-in-production';
 }
 
 function isInstalled() {
@@ -431,7 +452,7 @@ function authMiddleware(req, res, next) {
   }
   
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, getJWTSecret());
     req.user = decoded;
     next();
   } catch (e) {
@@ -549,6 +570,13 @@ app.post('/api/install/complete', async (req, res) => {
   }
   
   try {
+    // 如果没有从环境变量获取到 JWT_SECRET，则生成一个
+    let jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      jwtSecret = generateJWTSecret();
+      log('INFO', '已自动生成 JWT 密钥并保存到配置文件');
+    }
+    
     // 保存配置
     saveConfig({
       database: {
@@ -558,6 +586,7 @@ app.post('/api/install/complete', async (req, res) => {
         password: database.password,
         name: database.name
       },
+      jwtSecret: jwtSecret,
       installed: true,
       installedAt: new Date().toISOString()
     });
@@ -628,7 +657,7 @@ app.post('/api/auth/login', async (req, res) => {
     
     const token = jwt.sign(
       { id: user.id, username: user.username, role: user.role },
-      JWT_SECRET,
+      getJWTSecret(),
       { expiresIn: '7d' }
     );
     
