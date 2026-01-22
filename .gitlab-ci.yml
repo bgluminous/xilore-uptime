@@ -3,8 +3,10 @@ stages:
 
 build:
   stage: build
-  tag: 
-    - 
+  tags:
+    - alma
+    - build
+    - local
   only:
     - /^release-.*$/
   script:
