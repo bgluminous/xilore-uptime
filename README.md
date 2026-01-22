@@ -23,28 +23,23 @@
 
 ### Docker 部署（推荐）
 
-```bash
-# 1. 克隆项目
-git clone <your-repo-url>
-cd uptime-monitor
+```yaml
 
-# 2. 配置环境变量（可选）
-cp env.sample .env
-# 编辑 .env 文件修改密码等配置
+version: '3.8'
 
-# 3. 启动服务
-docker-compose up -d
+services:
+  uptimebot:
+    image: bgluminous/xilore-uptime:latest
+    container_name: uptimebot
+    environment:
+        - PORT=3000
+        - CONFIG_PATH=./config.yml
+        - JWT_SECRET=your-secret-key-here
+    volumes:
+        - /etc/localtime:/etc/localtime:ro 
+        - ./config.yml:/app/config.yml
 
-# 4. 访问应用
-# 打开浏览器访问 http://localhost:3000
 ```
-
-**首次访问配置**（使用 Docker 时）：
-- 数据库主机: `mysql`
-- 数据库端口: `3306`
-- 数据库名: `uptimebot`
-- 数据库用户: `uptimebot`
-- 数据库密码: 查看 `.env` 文件中的 `MYSQL_PASSWORD`
 
 ### 手动部署
 
@@ -72,11 +67,11 @@ npm start
 
 ### 监控类型说明
 
-| 类型 | 示例 | 说明 |
-|------|------|------|
-| HTTP(S) | `https://example.com` | 监控网站可用性和响应时间 |
-| TCP 端口 | `example.com:3306` | 检测端口是否开放（如数据库、Redis） |
-| ICMP Ping | `8.8.8.8` | 检测主机是否可达 |
+| 类型        | 示例                    | 说明                   |
+|-----------|-----------------------|----------------------|
+| HTTP(S)   | `https://example.com` | 监控网站可用性和响应时间         |
+| TCP 端口    | `example.com:3306`    | 检测端口是否开放（如数据库、Redis） |
+| ICMP Ping | `8.8.8.8`             | 检测主机是否可达             |
 
 ### 查看监控数据
 
@@ -98,8 +93,6 @@ npm start
 
 ```
 uptime-monitor/
-├── server/              # 后端代码
-│   └── server.js        # 主服务文件
 ├── public/              # 前端静态文件
 │   ├── index.html       # 管理页面
 │   ├── public.html      # 公开展示页
@@ -110,6 +103,7 @@ uptime-monitor/
 ├── Dockerfile           # Docker 镜像配置
 ├── env.sample           # 环境变量示例
 ├── package.json         # 项目依赖
+├── server.js            # 主服务文件
 └── DEPLOYMENT.md        # 详细部署文档
 ```
 
@@ -117,59 +111,29 @@ uptime-monitor/
 
 主要配置项（详见 `env.sample`）：
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `APP_PORT` | 应用访问端口 | `3000` |
-| `JWT_SECRET` | JWT 密钥 | `change-this-secret-in-production` |
-| `MYSQL_ROOT_PASSWORD` | MySQL root 密码 | `uptimebot_root_password` |
-| `MYSQL_DATABASE` | 数据库名 | `uptimebot` |
-| `MYSQL_USER` | 数据库用户 | `uptimebot` |
-| `MYSQL_PASSWORD` | 数据库密码 | `uptimebot_password` |
-| `TZ` | 时区 | `Asia/Shanghai` |
+| 变量            | 说明     | 默认值                                |
+|---------------|--------|------------------------------------|
+| `APP_PORT`    | 应用访问端口 | `3000`                             |
+| `JWT_SECRET`  | JWT 密钥 | `change-this-secret-in-production` |
+| `CONFIG_PATH` | 配置文件路径 | `./config.yml`                     |
 
-> ⚠️ **安全提示**: 生产环境请务必修改所有默认密码！
-
-## 🔧 常用命令
-
-```bash
-# Docker 相关
-docker-compose up -d          # 启动服务
-docker-compose down           # 停止服务
-docker-compose logs -f app    # 查看日志
-docker-compose restart        # 重启服务
-
-# Node.js 相关
-npm start                     # 启动应用
-npm install                   # 安装依赖
-```
 
 ## 📊 API 接口
 
-所有 API 接口需要登录认证（除安装接口）。
-
 ### 主要接口
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/auth/login` | 用户登录 |
-| GET | `/api/monitors` | 获取所有监控 |
-| POST | `/api/monitors` | 创建监控 |
-| PUT | `/api/monitors/:id` | 更新监控 |
-| DELETE | `/api/monitors/:id` | 删除监控 |
-| POST | `/api/monitors/:id/check` | 手动检测 |
-| GET | `/api/monitors/:id/history` | 获取历史记录 |
-| GET | `/api/stats` | 获取统计数据 |
+| 方法     | 路径                          | 说明     |
+|--------|-----------------------------|--------|
+| POST   | `/api/auth/login`           | 用户登录   |
+| GET    | `/api/monitors`             | 获取所有监控 |
+| POST   | `/api/monitors`             | 创建监控   |
+| PUT    | `/api/monitors/:id`         | 更新监控   |
+| DELETE | `/api/monitors/:id`         | 删除监控   |
+| POST   | `/api/monitors/:id/check`   | 手动检测   |
+| GET    | `/api/monitors/:id/history` | 获取历史记录 |
+| GET    | `/api/stats`                | 获取统计数据 |
 
 完整 API 文档请查看源码注释。
-
-## 🔒 安全建议
-
-- ✅ 修改所有默认密码
-- ✅ 使用 HTTPS（配置反向代理）
-- ✅ 定期更新依赖包
-- ✅ 定期备份数据库
-- ✅ 限制数据库端口访问
-- ✅ 启用防火墙
 
 ## 📝 许可证
 
