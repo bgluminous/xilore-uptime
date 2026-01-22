@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>服务状态 - Xilore Uptime</title>
+  <link rel="icon" href="/favicon.svg?v=1" type="image/svg+xml">
+  <link rel="icon" href="/favicon.ico?v=1">
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/utils.js"></script>
+  <script src="assets/status.js"></script>
+</head>
+<body>
+  <div class="public-header">
+    <h1 id="public-title">服务状态监控</h1>
+  </div>
+  
+  <div class="public-container">
+    <div class="public-stats" id="public-stats">
+      <div class="public-stat-card up">
+        <div class="public-stat-value">-</div>
+        <div class="public-stat-label">在线</div>
+      </div>
+      <div class="public-stat-card down">
+        <div class="public-stat-value">-</div>
+        <div class="public-stat-label">离线</div>
+      </div>
+      <div class="public-stat-card uptime">
+        <div class="public-stat-value">-</div>
+        <div class="public-stat-label">24小时可用率</div>
+      </div>
+    </div>
+    
+    <div id="public-monitor-list"></div>
+  </div>
+  
+  <footer class="public-footer">
+    <div class="public-footer-content">
+      <img src="/favicon.png" alt="Xilore Uptime" class="public-footer-icon">
+      <div class="public-footer-info">
+        <a href="https://github.com/bgluminous/xilore-uptime" target="_blank" rel="noopener noreferrer" class="public-footer-name">xilore-uptime</a>
+        <span class="public-footer-author">by 冰糕Luminous</span>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

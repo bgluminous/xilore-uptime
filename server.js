@@ -2145,7 +2145,7 @@ app.get('/setup', async (req, res) => {
 
 // 公开展示页面 - 根路径
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'public.html'));
+  res.sendFile(path.join(__dirname, 'public', 'status.html'));
 });
 
 // 管理页面
