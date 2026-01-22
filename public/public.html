@@ -6,7 +6,8 @@
   <title>服务状态 - Xilore UptimeBot</title>
   <link rel="icon" href="/favicon.svg?v=1" type="image/svg+xml">
   <link rel="icon" href="/favicon.ico?v=1">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/utils.js"></script>
   <script>
     // 立即加载标题，在页面渲染前就准备好
     (function() {
@@ -141,6 +142,13 @@
   </div>
   
   <script>
+    // 图标定义（与管理页保持一致）
+    const publicIcons = {
+      responseTime: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>',
+      uptime: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z"/></svg>',
+      lastCheck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>'
+    };
+    
     const publicApp = {
       monitors: [],
       groups: [],
@@ -246,7 +254,12 @@
         this.groups.forEach(group => {
           const monitors = grouped[group.id] || [];
           // 只显示有公开服务的分组
-          const publicMonitors = monitors.filter(m => m.is_public === 1 || m.is_public === true);
+          const publicMonitors = monitors
+            .filter(m => m.is_public === 1 || m.is_public === true)
+            .sort((a, b) => {
+              // 按名称排序：英文字母在中文前面
+              return sortByName(a.name || '', b.name || '');
+            });
           if (publicMonitors.length > 0) {
             html += this.renderGroupSection(group, publicMonitors);
           }
@@ -254,7 +267,15 @@
         
         // 渲染未分组
         if (ungrouped.length > 0) {
-          html += this.renderGroupSection({ id: 0, name: '未分组' }, ungrouped);
+          const sortedUngrouped = ungrouped
+            .filter(m => m.is_public === 1 || m.is_public === true)
+            .sort((a, b) => {
+              // 按名称排序：英文字母在中文前面
+              return sortByName(a.name || '', b.name || '');
+            });
+          if (sortedUngrouped.length > 0) {
+            html += this.renderGroupSection({ id: 0, name: '未分组' }, sortedUngrouped);
+          }
         }
         
         container.innerHTML = html;
@@ -401,15 +422,15 @@
             <div class="monitor-stats">
               <div class="monitor-stat">
                 <span class="monitor-stat-value">${m.last_response_time ? m.last_response_time + 'ms' : '-'}</span>
-                <span class="monitor-stat-label">响应时间</span>
+                <span class="monitor-stat-label">${publicIcons.responseTime} 响应时间</span>
               </div>
               <div class="monitor-stat">
                 <span class="monitor-stat-value">${uptimeText}</span>
-                <span class="monitor-stat-label">24小时可用率</span>
+                <span class="monitor-stat-label">${publicIcons.uptime} 24小时可用率</span>
               </div>
               <div class="monitor-stat monitor-stat-last-check">
                 <span class="monitor-stat-value">${m.last_check ? this.formatFullTime(m.last_check) : '-'}</span>
-                <span class="monitor-stat-label">最后检测时间</span>
+                <span class="monitor-stat-label">${publicIcons.lastCheck} 最后检测时间</span>
               </div>
             </div>
             ${statusBarHtml}

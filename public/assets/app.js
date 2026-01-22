@@ -749,13 +749,20 @@ const app = {
         this.groups = [];
       }
       this.groups.forEach(group => {
-        const monitors = grouped[group.id] || [];
+        const monitors = (grouped[group.id] || []).sort((a, b) => {
+          // 按名称排序：英文字母在中文前面
+          return sortByName(a.name || '', b.name || '');
+        });
         html += this.renderGroupSection(group, monitors);
       });
     
     // 渲染未分组（如果有未分组的监控，或者没有任何监控时显示）
     if (ungrouped.length > 0 || this.monitors.length === 0) {
-      html += this.renderGroupSection({ id: 0, name: '未分组' }, ungrouped);
+      const sortedUngrouped = ungrouped.sort((a, b) => {
+        // 按名称排序：英文字母在中文前面
+        return sortByName(a.name || '', b.name || '');
+      });
+      html += this.renderGroupSection({ id: 0, name: '未分组' }, sortedUngrouped);
     }
     
       container.innerHTML = html;
@@ -783,6 +790,7 @@ const app = {
       return 'warning'; // 部分有问题 - 黄色
     }
   },
+  
 
   renderGroupSection(group, monitors) {
     const status = this.getGroupStatus(monitors);
@@ -2261,10 +2269,12 @@ const app = {
       
       const settings = await response.json();
       document.getElementById('public-page-title').value = settings.publicPageTitle || '服务状态监控';
+      document.getElementById('log-retention-days').value = settings.logRetentionDays || 30;
     } catch (error) {
       console.error('加载设置失败:', error);
       // 即使出错也使用默认值
       document.getElementById('public-page-title').value = '服务状态监控';
+      document.getElementById('log-retention-days').value = 30;
       this.showToast('加载设置失败，使用默认值', 'warning');
     }
   },
@@ -2277,13 +2287,19 @@ const app = {
     event.preventDefault();
     
     const publicPageTitle = document.getElementById('public-page-title').value.trim() || '服务状态监控';
+    const logRetentionDays = parseInt(document.getElementById('log-retention-days').value, 10);
+    
+    if (isNaN(logRetentionDays) || logRetentionDays < 30) {
+      this.showToast('日志保留天数必须至少为30天', 'error');
+      return;
+    }
     
     try {
       const response = await fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ publicPageTitle })
+        body: JSON.stringify({ publicPageTitle, logRetentionDays })
       });
       
       if (!response.ok) {

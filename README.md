@@ -86,22 +86,22 @@ npm start
 - **数据库**: MySQL 8.0
 - **认证**: JWT + bcrypt
 - **前端**: 原生 HTML/CSS/JavaScript
-- **图表**: Chart.js
-- **部署**: Docker + Docker Compose
 
 ## 📁 项目结构
 
 ```
 uptime-monitor/
 ├── public/              # 前端静态文件
-│   ├── index.html       # 管理页面
+|   ├── assets/          # 资源文件
+│   |   ├── style.css    # 样式
+│   |   ├── app.js       # 前端逻辑
+│   |   └── utils.js     # 工具
+│   ├── favicon.ico      # 图标
+│   ├── favicon.png      # 图标
+│   ├── index.html       # 管理页
 │   ├── public.html      # 公开展示页
-│   ├── setup.html       # 安装向导
-│   ├── app.js           # 前端逻辑
-│   └── style.css        # 样式文件
-├── docker-compose.yml   # Docker Compose 配置
+│   └── setup.html       # 安装向导页
 ├── Dockerfile           # Docker 镜像配置
-├── env.sample           # 环境变量示例
 ├── package.json         # 项目依赖
 ├── server.js            # 主服务文件
 └── DEPLOYMENT.md        # 详细部署文档

@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
   <!-- 安装向导 -->
@@ -49,22 +49,22 @@
           <div class="form-row">
             <div class="form-group">
               <label for="db-host">主机地址</label>
-              <input type="text" id="db-host" value="localhost" required>
+              <input type="text" id="db-host" required placeholder="localhost">
             </div>
             <div class="form-group" style="max-width: 120px;">
               <label for="db-port">端口</label>
-              <input type="number" id="db-port" value="3306" required>
+              <input type="number" id="db-port" required placeholder="3306">
             </div>
           </div>
           
           <div class="form-group">
             <label for="db-name">数据库名</label>
-            <input type="text" id="db-name" value="uptimebot" required placeholder="数据库将自动创建">
+            <input type="text" id="db-name" required placeholder="uptime">
           </div>
           
           <div class="form-group">
             <label for="db-user">用户名</label>
-            <input type="text" id="db-user" value="root" required>
+            <input type="text" id="db-user" required placeholder="uptime">
           </div>
           
           <div class="form-group">
@@ -126,7 +126,7 @@
     </div>
   </div>
   
-  <script src="app.js"></script>
+  <script src="assets/app.js"></script>
   <script>
     // 初始化页面专用的 setup 对象
     const setupApp = {

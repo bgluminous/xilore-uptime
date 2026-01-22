@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
   <!-- 安装向导 -->
@@ -532,6 +532,12 @@
             <p class="form-hint">此标题将显示在公开展示页面（/）的顶部</p>
           </div>
           
+          <div class="form-group">
+            <label for="log-retention-days">日志保留时间（天）</label>
+            <input type="number" id="log-retention-days" placeholder="30" min="30" required>
+            <p class="form-hint">超过此时间的检测历史记录将在每天00:00自动删除（最小30天）</p>
+          </div>
+          
           <div class="modal-footer">
             <button type="button" class="btn-secondary" onclick="app.closeSettingsModal()">取消</button>
             <button type="submit" class="btn-primary">保存</button>
@@ -565,6 +571,7 @@
   <div class="toast-container" id="toast-container"></div>
   
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="app.js"></script>
+  <script src="assets/utils.js"></script>
+  <script src="assets/app.js"></script>
 </body>
 </html>

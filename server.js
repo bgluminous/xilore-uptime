@@ -18,6 +18,9 @@ const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, 'data', 'con
 
 let pool = null;
 let config = null;
+// 定时器引用，用于在设置更新时重新调度
+let cleanupTimeout = null;
+let cleanupInterval = null;
 
 // ============ 日志工具 ============
 function log(level, message, data = null) {
@@ -1567,28 +1570,51 @@ app.get('/api/monitors/:id/history', authMiddleware, async (req, res) => {
 app.get('/api/settings', authMiddleware, async (req, res) => {
   try {
     if (!pool) {
-      return res.json({ publicPageTitle: '服务状态监控' });
+      return res.json({ 
+        publicPageTitle: '服务状态监控',
+        logRetentionDays: 30 
+      });
     }
     
     try {
-      const [rows] = await pool.execute(
+      // 获取公开展示页面标题
+      const [titleRows] = await pool.execute(
         'SELECT value FROM settings WHERE key_name = ?',
         ['publicPageTitle']
       );
       
-      const publicPageTitle = rows.length > 0 && rows[0].value 
-        ? rows[0].value 
+      const publicPageTitle = titleRows.length > 0 && titleRows[0].value 
+        ? titleRows[0].value 
         : '服务状态监控';
       
-      res.json({ publicPageTitle });
+      // 获取日志保留天数
+      const [retentionRows] = await pool.execute(
+        'SELECT value FROM settings WHERE key_name = ?',
+        ['logRetentionDays']
+      );
+      
+      const logRetentionDays = retentionRows.length > 0 && retentionRows[0].value 
+        ? parseInt(retentionRows[0].value, 10) 
+        : 30;
+      
+      res.json({ 
+        publicPageTitle,
+        logRetentionDays: isNaN(logRetentionDays) ? 30 : logRetentionDays
+      });
     } catch (dbError) {
       // 如果表不存在或其他数据库错误，返回默认值
       log('WARN', '获取设置失败，使用默认值', { error: dbError.message, user: req.user?.username });
-      res.json({ publicPageTitle: '服务状态监控' });
+      res.json({ 
+        publicPageTitle: '服务状态监控',
+        logRetentionDays: 30 
+      });
     }
   } catch (e) {
     log('ERROR', '获取设置失败', { error: e.message, user: req.user?.username });
-    res.json({ publicPageTitle: '服务状态监控' });
+    res.json({ 
+      publicPageTitle: '服务状态监控',
+      logRetentionDays: 30 
+    });
   }
 });
 
@@ -1598,7 +1624,7 @@ app.put('/api/settings', authMiddleware, async (req, res) => {
       return res.status(500).json({ error: '数据库未连接' });
     }
     
-    const { publicPageTitle } = req.body;
+    const { publicPageTitle, logRetentionDays } = req.body;
     
     if (publicPageTitle !== undefined) {
       const value = publicPageTitle || '服务状态监控';
@@ -1614,22 +1640,138 @@ app.put('/api/settings', authMiddleware, async (req, res) => {
       log('INFO', '更新设置成功', { publicPageTitle: value, user: req.user?.username });
     }
     
+    if (logRetentionDays !== undefined) {
+      const retentionDays = parseInt(logRetentionDays, 10);
+      if (isNaN(retentionDays) || retentionDays < 30) {
+        return res.status(400).json({ error: '日志保留天数必须至少为30天' });
+      }
+      
+      const value = retentionDays.toString();
+      
+      // 使用 INSERT ... ON DUPLICATE KEY UPDATE 来插入或更新
+      await pool.execute(
+        `INSERT INTO settings (key_name, value) 
+         VALUES (?, ?) 
+         ON DUPLICATE KEY UPDATE value = ?, updated_at = CURRENT_TIMESTAMP`,
+        ['logRetentionDays', value, value]
+      );
+      
+      log('INFO', '更新设置成功', { logRetentionDays: retentionDays, user: req.user?.username });
+      
+      // 重新调度定时任务以应用新的设置
+      scheduleLogCleanup();
+    }
+    
     // 返回更新后的设置
-    const [rows] = await pool.execute(
+    const [titleRows] = await pool.execute(
       'SELECT value FROM settings WHERE key_name = ?',
       ['publicPageTitle']
     );
     
-    const updatedTitle = rows.length > 0 && rows[0].value 
-      ? rows[0].value 
+    const updatedTitle = titleRows.length > 0 && titleRows[0].value 
+      ? titleRows[0].value 
       : '服务状态监控';
     
-    res.json({ publicPageTitle: updatedTitle });
+    const [retentionRows] = await pool.execute(
+      'SELECT value FROM settings WHERE key_name = ?',
+      ['logRetentionDays']
+    );
+    
+    const updatedRetention = retentionRows.length > 0 && retentionRows[0].value 
+      ? parseInt(retentionRows[0].value, 10) 
+      : 30;
+    
+    res.json({ 
+      publicPageTitle: updatedTitle,
+      logRetentionDays: isNaN(updatedRetention) ? 30 : updatedRetention
+    });
   } catch (e) {
     log('ERROR', '更新设置失败', { error: e.message, user: req.user?.username });
     res.status(500).json({ error: e.message });
   }
 });
+
+// ============ 日志清理功能 ============
+async function cleanupOldLogs() {
+  if (!pool) {
+    return;
+  }
+  
+  try {
+    // 获取日志保留天数设置
+    const [rows] = await pool.execute(
+      'SELECT value FROM settings WHERE key_name = ?',
+      ['logRetentionDays']
+    );
+    
+    const retentionDays = rows.length > 0 && rows[0].value 
+      ? parseInt(rows[0].value, 10) 
+      : 30;
+    
+    if (isNaN(retentionDays) || retentionDays < 30) {
+      log('WARN', '日志保留天数设置无效，使用默认值30天');
+      return;
+    }
+    
+    // 计算删除时间点
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+    
+    // 删除超过保留时间的日志
+    const [result] = await pool.execute(
+      'DELETE FROM check_history WHERE checked_at < ?',
+      [cutoffDate]
+    );
+    
+    if (result.affectedRows > 0) {
+      log('INFO', '日志清理完成', { 
+        retentionDays,
+        deletedRecords: result.affectedRows,
+        cutoffDate: cutoffDate.toISOString()
+      });
+    } else {
+      log('INFO', '日志清理完成，无需删除记录', { retentionDays });
+    }
+  } catch (e) {
+    log('ERROR', '日志清理失败', { error: e.message });
+  }
+}
+
+// ============ 定时任务：每天00:00执行日志清理 ============
+function scheduleLogCleanup() {
+  // 清除旧的定时器（如果存在）
+  if (cleanupTimeout) {
+    clearTimeout(cleanupTimeout);
+    cleanupTimeout = null;
+  }
+  if (cleanupInterval) {
+    clearInterval(cleanupInterval);
+    cleanupInterval = null;
+  }
+  
+  // 计算到下一个00:00的时间
+  const now = new Date();
+  const nextMidnight = new Date();
+  nextMidnight.setHours(24, 0, 0, 0); // 设置为明天的00:00:00
+  
+  const msUntilMidnight = nextMidnight.getTime() - now.getTime();
+  
+  log('INFO', '定时任务已设置', { 
+    nextCleanup: nextMidnight.toISOString(),
+    msUntilMidnight 
+  });
+  
+  // 设置第一次执行时间（到下一个00:00）
+  cleanupTimeout = setTimeout(() => {
+    // 立即执行一次
+    cleanupOldLogs();
+    
+    // 然后每24小时执行一次
+    cleanupInterval = setInterval(() => {
+      cleanupOldLogs();
+    }, 24 * 60 * 60 * 1000); // 24小时
+  }, msUntilMidnight);
+}
 
 app.get('/api/stats', authMiddleware, async (req, res) => {
   try {
@@ -2030,6 +2172,8 @@ async function start() {
       await connectDatabase();
       await initializeTables();
       initializeChecks();
+      // 启动日志清理定时任务
+      scheduleLogCleanup();
       log('INFO', '服务器启动成功', { port: PORT });
     } catch (e) {
       log('ERROR', '连接数据库失败', { error: e.message });
