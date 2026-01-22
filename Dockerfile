@@ -14,18 +14,10 @@ ENV NODE_ENV=production
 COPY package*.json ./
 
 # 安装项目依赖
-RUN npm ci --only=production && npm cache clean --force
+RUN npm install
 
 # 复制项目文件
 COPY . .
-
-# 创建非 root 用户（安全性）
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001 && \
-    chown -R nodejs:nodejs /app
-
-# 切换到非 root 用户
-USER nodejs
 
 # 暴露端口
 EXPOSE 3000
@@ -35,4 +27,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000/', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
 # 启动应用
-CMD ["node", "server/server.js"]
+CMD ["npm", "start"]
