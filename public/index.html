@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Xilore UptimeBot - 网站监控</title>
-  <link rel="icon" href="/favicon.svg?v=1" type="image/svg+xml">
   <link rel="icon" href="/favicon.ico?v=1">
+  <link rel="icon" href="/favicon.png?v=1" type="image/png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -49,22 +49,22 @@
           <div class="form-row">
             <div class="form-group">
               <label for="db-host">主机地址</label>
-              <input type="text" id="db-host" value="localhost" required>
+              <input type="text" id="db-host" required placeholder="localhost">
             </div>
             <div class="form-group" style="max-width: 120px;">
               <label for="db-port">端口</label>
-              <input type="number" id="db-port" value="3306" required>
+              <input type="number" id="db-port" required placeholder="3306">
             </div>
           </div>
           
           <div class="form-group">
             <label for="db-name">数据库名</label>
-            <input type="text" id="db-name" value="uptimebot" required placeholder="数据库将自动创建">
+            <input type="text" id="db-name" required placeholder="uptime">
           </div>
           
           <div class="form-group">
             <label for="db-user">用户名</label>
-            <input type="text" id="db-user" value="root" required>
+            <input type="text" id="db-user" required placeholder="uptime">
           </div>
           
           <div class="form-group">
@@ -131,7 +131,7 @@
     <div class="login-card">
       <div class="login-header">
         <div class="logo-icon">
-          <img src="/favicon.svg?v=1" alt="Xilore UptimeBot" width="28" height="28">
+          <img src="/favicon.png" alt="Xilore UptimeBot" width="28" height="28">
         </div>
         <h1>Xilore UptimeBot</h1>
       </div>
