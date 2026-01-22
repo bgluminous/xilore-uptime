@@ -13,7 +13,8 @@ const cookieParser = require('cookie-parser');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const CONFIG_PATH = path.join(__dirname, 'config.json');
+// 如果设置了 CONFIG_PATH 环境变量则使用它，否则使用 data/config.json
+const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, 'data', 'config.json');
 
 let pool = null;
 let config = null;
@@ -72,6 +73,11 @@ function loadConfig() {
 
 function saveConfig(newConfig) {
   config = newConfig;
+  // 确保配置文件的目录存在
+  const configDir = path.dirname(CONFIG_PATH);
+  if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+  }
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
 }
 
@@ -612,8 +618,17 @@ app.post('/api/install/complete', async (req, res) => {
     res.json({ success: true, message: '安装完成' });
   } catch (e) {
     // 回滚配置
-    if (fs.existsSync(CONFIG_PATH)) {
-      fs.unlinkSync(CONFIG_PATH);
+    try {
+      if (fs.existsSync(CONFIG_PATH)) {
+        const stats = fs.statSync(CONFIG_PATH);
+        // 只删除文件，不删除目录（Docker 挂载卷可能是目录）
+        if (stats.isFile()) {
+          fs.unlinkSync(CONFIG_PATH);
+        }
+      }
+    } catch (cleanupError) {
+      // 清理失败不影响错误响应
+      log('WARN', '清理配置文件失败', { error: cleanupError.message });
     }
     config = null;
     pool = null;

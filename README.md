@@ -2,7 +2,7 @@
 
 一个简洁高效的网站监控工具，支持 HTTP、TCP 端口和 ICMP Ping 检测。
 
-![UptimeBot](https://img.shields.io/badge/version-1.0.0-blue)
+![UptimeBot](https://img.shields.io/badge/version-1.0.2-blue)
 ![Node.js](https://img.shields.io/badge/node-%3E%3D16.0.0-green)
 ![License](https://img.shields.io/badge/license-Luminous-orange)
 
@@ -37,7 +37,7 @@ services:
         - JWT_SECRET=your-secret-key-here
     volumes:
         - /etc/localtime:/etc/localtime:ro 
-        - ./config.yml:/app/config.yml
+        - ./:/app/data/
 
 ```
 
@@ -158,5 +158,3 @@ uptime-monitor/
 
 ---
 
-**项目版本**: 1.0.0  
-**最后更新**: 2025-01
