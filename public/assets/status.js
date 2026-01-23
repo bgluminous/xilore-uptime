@@ -241,31 +241,40 @@ const publicApp = {
       const tooltip = getTooltip(item).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
       
       const subItems = [];
-      for (let i = 0; i < 12; i++) {
-        // 计算当前小时间段的时间范围
-        const subStartTime = new Date(startTime.getTime() + i * segmentDuration);
-        const subEndTime = new Date(startTime.getTime() + (i + 1) * segmentDuration);
-        
-        // 判断该小时间段内的状态（优先 down > warning > up）
-        let subStatus = null;
+      const subStatuses = new Array(12).fill(null);
+      const priority = { down: 3, warning: 2, up: 1 };
 
-        for (const record of checkRecords) {
-          const checkTime = new Date(record.checked_at);
-          if (checkTime >= subStartTime && checkTime < subEndTime) {
-            if (record.status === 'down') {
-              subStatus = 'down';
-            } else if (record.status === 'warning') {
-              if (subStatus !== 'down') {
-                subStatus = 'warning';
-              }
-            } else if (record.status === 'up') {
-              if (!subStatus) {
-                subStatus = 'up';
-              }
-            }
-          }
+      // 将检测记录映射到对应小块（同一小块取优先级最高状态）
+      for (const record of checkRecords) {
+        const checkTime = new Date(record.checked_at);
+        if (checkTime < startTime || checkTime >= endTime) continue;
+        const idx = Math.min(11, Math.max(0, Math.floor((checkTime - startTime) / segmentDuration)));
+        const current = subStatuses[idx];
+        if (!current || priority[record.status] > priority[current]) {
+          subStatuses[idx] = record.status;
         }
-        
+      }
+
+      // 向前填充空缺（使用最近一次状态），避免检测间隔大时出现灰块
+      let lastKnown = null;
+      for (let i = 0; i < subStatuses.length; i++) {
+        if (subStatuses[i]) {
+          lastKnown = subStatuses[i];
+        } else if (lastKnown) {
+          subStatuses[i] = lastKnown;
+        }
+      }
+
+      // 向后填充开头空缺（使用最早一次状态）
+      const firstKnownIndex = subStatuses.findIndex(status => status !== null);
+      if (firstKnownIndex > 0) {
+        for (let i = 0; i < firstKnownIndex; i++) {
+          subStatuses[i] = subStatuses[firstKnownIndex];
+        }
+      }
+
+      for (let i = 0; i < 12; i++) {
+        const subStatus = subStatuses[i];
         if (useThinLine) {
           // 细竖线模式：空数据保持灰色，warning/down 用细竖线，其余绿色
           if (subStatus === 'warning') {

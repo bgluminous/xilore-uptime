@@ -1,8 +1,8 @@
-# UptimeBot - 网站监控工具
+# Xilore Uptime - 网站监控工具
 
 一个简洁高效的网站监控工具，支持 HTTP、TCP 端口和 ICMP Ping 检测。
 
-![UptimeBot](https://img.shields.io/badge/version-1.0.2-blue)
+![Xilore Uptime](https://img.shields.io/badge/version-1.3.0-blue)
 ![Node.js](https://img.shields.io/badge/node-%3E%3D16.0.0-green)
 ![License](https://img.shields.io/badge/license-Luminous-orange)
 
@@ -16,6 +16,9 @@
 - 📊 **实时仪表板** - 直观展示所有监控状态
 - 📈 **历史记录** - 查看检测历史和响应时间趋势
 - ⏰ **自动检测** - 可配置检测间隔（10秒-1小时）
+- 📣 **通知功能** - 支持邮件和 Webhook 通知
+- 🧩 **分组管理** - 监控分组管理与筛选
+- 🧭 **公开展示页** - 对外展示服务状态
 - 📱 **响应式设计** - 支持桌面和移动设备
 - 🐳 **Docker 支持** - 一键部署，开箱即用
 
@@ -37,7 +40,7 @@ services:
         - JWT_SECRET=your-secret-key-here
     volumes:
         - /etc/localtime:/etc/localtime:ro 
-        - ./:/app/data/
+        - ./data:/app/data
 
 ```
 
@@ -83,55 +86,63 @@ npm start
 ## 🛠️ 技术栈
 
 - **后端**: Node.js + Express
-- **数据库**: MySQL 8.0
+- **数据库**: MySQL 5.7+ / 8.0
 - **认证**: JWT + bcrypt
 - **前端**: 原生 HTML/CSS/JavaScript
 
 ## 📁 项目结构
 
 ```
-uptime-monitor/
+xilore-uptime/
 ├── public/              # 前端静态文件
 |   ├── assets/          # 资源文件
 │   |   ├── style.css    # 样式
 │   |   ├── app.js       # 前端逻辑
+│   |   ├── chart.js     # 图表
+│   |   ├── setup.js     # 安装向导逻辑
+│   |   ├── status.js    # 公开页逻辑
 │   |   └── utils.js     # 工具
 │   ├── favicon.ico      # 图标
 │   ├── favicon.png      # 图标
 │   ├── index.html       # 管理页
-│   ├── public.html      # 公开展示页
-│   └── setup.html       # 安装向导页
+│   ├── setup.html       # 安装向导页
+│   └── status.html      # 公开展示页
 ├── Dockerfile           # Docker 镜像配置
 ├── package.json         # 项目依赖
 ├── server.js            # 主服务文件
-└── DEPLOYMENT.md        # 详细部署文档
+└── docs/DEPLOYMENT.md   # 详细部署文档
 ```
 
 ## ⚙️ 环境变量
 
-主要配置项（详见 `env.sample`）：
+主要配置项：
 
-| 变量            | 说明     | 默认值                                |
-|---------------|--------|------------------------------------|
-| `APP_PORT`    | 应用访问端口 | `3000`                             |
+| 变量            | 说明     | 默认值                                 |
+|---------------|--------|-------------------------------------|
+| `PORT`        | 应用访问端口 | `3000`                              |
 | `JWT_SECRET`  | JWT 密钥 | `change-this-secret-in-production` |
-| `CONFIG_PATH` | 配置文件路径 | `./config.yml`                     |
+| `CONFIG_PATH` | 配置文件路径 | `./data/config.json`               |
 
 
 ## 📊 API 接口
 
 ### 主要接口
 
-| 方法     | 路径                          | 说明     |
-|--------|-----------------------------|--------|
-| POST   | `/api/auth/login`           | 用户登录   |
-| GET    | `/api/monitors`             | 获取所有监控 |
-| POST   | `/api/monitors`             | 创建监控   |
-| PUT    | `/api/monitors/:id`         | 更新监控   |
-| DELETE | `/api/monitors/:id`         | 删除监控   |
-| POST   | `/api/monitors/:id/check`   | 手动检测   |
-| GET    | `/api/monitors/:id/history` | 获取历史记录 |
-| GET    | `/api/stats`                | 获取统计数据 |
+| 方法     | 路径                          | 说明           |
+|--------|-----------------------------|--------------|
+| POST   | `/api/auth/login`           | 用户登录         |
+| POST   | `/api/auth/logout`          | 用户退出         |
+| GET    | `/api/auth/me`              | 当前用户信息       |
+| GET    | `/api/monitors`             | 获取所有监控       |
+| POST   | `/api/monitors`             | 创建监控         |
+| PUT    | `/api/monitors/:id`         | 更新监控         |
+| DELETE | `/api/monitors/:id`         | 删除监控         |
+| GET    | `/api/groups`               | 获取分组         |
+| POST   | `/api/groups`               | 创建分组         |
+| GET    | `/api/settings`             | 获取设置         |
+| PUT    | `/api/settings`             | 更新设置         |
+| GET    | `/api/public/monitors`      | 公开监控列表      |
+| GET    | `/api/public/stats`         | 公开统计数据      |
 
 完整 API 文档请查看源码注释。
 

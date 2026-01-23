@@ -340,6 +340,20 @@
           </label>
         </div>
         
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="monitor-email-notification" style="width: auto; margin: 0;">
+            <span>邮件提示（状态变化时发送邮件通知）</span>
+          </label>
+        </div>
+        
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="monitor-webhook-notification" style="width: auto; margin: 0;">
+            <span>Webhook 提示（状态变化时发送 Webhook 通知）</span>
+          </label>
+        </div>
+        
         <div class="form-actions">
           <button type="button" class="btn-secondary" onclick="app.closeModal()">取消</button>
           <button type="submit" class="btn-primary">保存</button>
@@ -521,44 +535,200 @@
         <button class="btn-close" onclick="app.closeSettingsModal()">×</button>
       </div>
       
-      <div class="settings-modal-content">
-        <form onsubmit="app.saveSettings(event)">
-          <div class="form-group">
-            <label for="public-page-title">公开展示页面标题</label>
-            <input type="text" id="public-page-title" placeholder="服务状态监控" required>
-            <p class="form-hint">此标题将显示在公开展示页面（/）的顶部</p>
+      <div class="settings-panel-container">
+        <!-- 左侧菜单 -->
+        <div class="settings-menu">
+          <div class="settings-menu-item active" data-section="general" onclick="app.switchSettingsSection('general')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <line x1="9" y1="3" x2="9" y2="21"/>
+            </svg>
+            <span>基础设置</span>
           </div>
-          
-          <div class="form-group">
-            <label for="log-retention-days">日志保留时间（天）</label>
-            <input type="number" id="log-retention-days" placeholder="30" min="30" required>
-            <p class="form-hint">超过此时间的检测历史记录将在每天00:00自动删除（最小30天）</p>
+          <div class="settings-menu-item" data-section="admin" onclick="app.switchSettingsSection('admin')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+              <circle cx="12" cy="7" r="4"/>
+            </svg>
+            <span>管理员账户</span>
           </div>
-          
-          <div class="modal-footer">
-            <button type="button" class="btn-secondary" onclick="app.closeSettingsModal()">取消</button>
-            <button type="submit" class="btn-primary">保存</button>
+          <div class="settings-menu-item" data-section="email" onclick="app.switchSettingsSection('email')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+              <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+              <polyline points="22,6 12,13 2,6"/>
+            </svg>
+            <span>邮件配置</span>
           </div>
-        </form>
+          <div class="settings-menu-item" data-section="webhook" onclick="app.switchSettingsSection('webhook')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+              <path d="M5 12h14M12 5l7 7-7 7"/>
+            </svg>
+            <span>Webhook 配置</span>
+          </div>
+          <div class="settings-menu-item" data-section="danger" onclick="app.switchSettingsSection('danger')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <span>危险操作</span>
+          </div>
+        </div>
         
-        <div class="settings-danger-zone">
-          <div class="danger-zone-header">
-            <h3>危险操作</h3>
-          </div>
-          <div class="form-group">
-            <label for="delete-all-history-confirm">删除所有检测历史</label>
-            <p class="form-hint">此操作将永久删除所有监控服务的检测历史记录，且无法恢复。请输入 "DELETE" 以确认。</p>
-            <div class="danger-action-wrapper">
-              <input type="text" id="delete-all-history-confirm" placeholder="输入 DELETE 以确认" autocomplete="off">
-              <button type="button" class="btn-danger" onclick="app.deleteAllHistory()" id="delete-all-history-btn" disabled>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                  <polyline points="3 6 5 6 21 6"/>
-                  <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-                </svg>
-                删除所有历史
-              </button>
+        <!-- 右侧内容 -->
+        <div class="settings-content">
+          <form onsubmit="app.saveSettings(event)">
+            <!-- 基础设置 -->
+            <div class="settings-section" id="settings-section-general">
+              <div class="form-group">
+                <label for="public-page-title">公开展示页面标题</label>
+                <input type="text" id="public-page-title" placeholder="服务状态监控" required>
+                <p class="form-hint">此标题将显示在公开展示页面（/）的顶部</p>
+              </div>
+              
+              <div class="form-group">
+                <label for="log-retention-days">日志保留时间（天）</label>
+                <input type="number" id="log-retention-days" placeholder="30" min="30" required>
+                <p class="form-hint">超过此时间的检测历史记录将在每天00:00自动删除（最小30天）</p>
+              </div>
             </div>
-          </div>
+            
+            <!-- 管理员账户 -->
+            <div class="settings-section" id="settings-section-admin" style="display: none;">
+              <div class="form-group">
+                <label for="admin-email">管理员邮箱</label>
+                <input type="email" id="admin-email" placeholder="用于接收通知（可选）">
+                <p class="form-hint">用于接收系统通知的邮箱地址</p>
+              </div>
+              
+              <div class="form-group">
+                <label for="admin-password">新密码</label>
+                <input type="password" id="admin-password" placeholder="留空则不修改密码" minlength="6">
+                <p class="form-hint">如需修改密码，请输入新密码（至少6个字符）</p>
+              </div>
+              
+              <div class="form-group">
+                <label for="admin-password-confirm">确认新密码</label>
+                <input type="password" id="admin-password-confirm" placeholder="再次输入新密码">
+                <p class="form-hint">请再次输入新密码以确认</p>
+              </div>
+            </div>
+            
+            <!-- 邮件配置 -->
+            <div class="settings-section" id="settings-section-email" style="display: none;">
+              <div class="form-group">
+                <label for="smtp-host">SMTP 服务器</label>
+                <input type="text" id="smtp-host" placeholder="例如：smtp.example.com">
+                <p class="form-hint">邮件服务器的地址</p>
+              </div>
+              
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="smtp-port">SMTP 端口</label>
+                  <input type="number" id="smtp-port" placeholder="587" min="1" max="65535">
+                  <p class="form-hint">通常为 587 (TLS) 或 465 (SSL)</p>
+                </div>
+                
+                <div class="form-group">
+                  <label for="smtp-secure-label" style="display: block; margin-bottom: 6px; font-size: 0.85rem; font-weight: 500; color: var(--text-secondary);">安全连接</label>
+                  <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 0;">
+                    <input type="checkbox" id="smtp-secure" style="width: auto; margin: 0;">
+                    <span>使用 SSL/TLS</span>
+                  </label>
+                </div>
+              </div>
+              
+              <div class="form-group">
+                <label for="smtp-user">SMTP 用户名</label>
+                <input type="text" id="smtp-user" placeholder="SMTP 登录用户名">
+                <p class="form-hint">用于登录 SMTP 服务器的用户名</p>
+              </div>
+              
+              <div class="form-group">
+                <label for="smtp-password">SMTP 密码</label>
+                <input type="password" id="smtp-password" placeholder="SMTP 登录密码">
+                <p class="form-hint">用于登录 SMTP 服务器的密码</p>
+              </div>
+              
+              <div class="form-group">
+                <label for="smtp-from">发件人邮箱</label>
+                <input type="email" id="smtp-from" placeholder="例如：noreply@example.com">
+                <p class="form-hint">邮件通知的发件人地址</p>
+              </div>
+              
+              <div class="form-group" style="margin-top: 24px;">
+                <button type="button" class="btn-secondary" onclick="app.testEmail()" id="test-email-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-right: 6px; vertical-align: middle;">
+                    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                    <polyline points="22,6 12,13 2,6"/>
+                  </svg>
+                  测试邮件发送
+                </button>
+                <p class="form-hint">点击此按钮将发送一封测试邮件到管理员邮箱</p>
+              </div>
+            </div>
+            
+            <!-- Webhook 配置 -->
+            <div class="settings-section" id="settings-section-webhook" style="display: none;">
+              <div class="form-group">
+                <label for="webhook-url">Webhook URL</label>
+                <input type="url" id="webhook-url" placeholder="例如：https://example.com/webhook">
+                <p class="form-hint">接收通知的 Webhook 地址</p>
+              </div>
+              
+              <div class="form-group">
+                <label for="webhook-method">请求方法</label>
+                <select id="webhook-method">
+                  <option value="POST" selected>POST</option>
+                  <option value="GET">GET</option>
+                  <option value="PUT">PUT</option>
+                  <option value="PATCH">PATCH</option>
+                </select>
+                <p class="form-hint">HTTP 请求方法</p>
+              </div>
+              
+              <div class="form-group">
+                <label for="webhook-headers">请求头（JSON 格式）</label>
+                <textarea id="webhook-headers" rows="4" placeholder='{"Authorization": "Bearer token", "X-Custom-Header": "value"}'></textarea>
+                <p class="form-hint">可选的 HTTP 请求头，JSON 格式（例如：{"Authorization": "Bearer token"}）</p>
+              </div>
+              
+              <div class="form-group" style="margin-top: 24px;">
+                <button type="button" class="btn-secondary" onclick="app.testWebhook()" id="test-webhook-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-right: 6px; vertical-align: middle;">
+                    <path d="M5 12h14M12 5l7 7-7 7"/>
+                  </svg>
+                  测试 Webhook
+                </button>
+                <p class="form-hint">点击此按钮将发送一个测试 Webhook 请求</p>
+              </div>
+            </div>
+            
+            <!-- 危险操作 -->
+            <div class="settings-section" id="settings-section-danger" style="display: none;">
+              <div class="form-group">
+                <label for="delete-all-history-confirm">删除所有检测历史</label>
+                <p class="form-hint">此操作将永久删除所有监控服务的检测历史记录，且无法恢复。请输入 "DELETE" 以确认。</p>
+              </div>
+              <div class="danger-action-wrapper">
+                <div class="danger-input-wrapper">
+                  <input type="text" id="delete-all-history-confirm" placeholder="输入 DELETE 以确认" autocomplete="off">
+                </div>
+                <button type="button" class="btn-danger" onclick="app.deleteAllHistory()" id="delete-all-history-btn" disabled>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                  </svg>
+                  删除所有历史
+                </button>
+              </div>
+            </div>
+            
+            <div class="modal-footer">
+              <button type="button" class="btn-secondary" onclick="app.closeSettingsModal()">取消</button>
+              <button type="submit" class="btn-primary">保存</button>
+            </div>
+          </form>
         </div>
       </div>
     </div>

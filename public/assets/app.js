@@ -854,31 +854,40 @@ const app = {
       const tooltip = getTooltip(item).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
       
       const subItems = [];
-      for (let i = 0; i < 12; i++) {
-        // 计算当前小时间段的时间范围
-        const subStartTime = new Date(startTime.getTime() + i * segmentDuration);
-        const subEndTime = new Date(startTime.getTime() + (i + 1) * segmentDuration);
-        
-        // 判断该小时间段内的状态（优先 down > warning > up）
-        let subStatus = null;
+      const subStatuses = new Array(12).fill(null);
+      const priority = { down: 3, warning: 2, up: 1 };
 
-        for (const record of checkRecords) {
-          const checkTime = new Date(record.checked_at);
-          if (checkTime >= subStartTime && checkTime < subEndTime) {
-            if (record.status === 'down') {
-              subStatus = 'down';
-            } else if (record.status === 'warning') {
-              if (subStatus !== 'down') {
-                subStatus = 'warning';
-              }
-            } else if (record.status === 'up') {
-              if (!subStatus) {
-                subStatus = 'up';
-              }
-            }
-          }
+      // 将检测记录映射到对应小块（同一小块取优先级最高状态）
+      for (const record of checkRecords) {
+        const checkTime = new Date(record.checked_at);
+        if (checkTime < startTime || checkTime >= endTime) continue;
+        const idx = Math.min(11, Math.max(0, Math.floor((checkTime - startTime) / segmentDuration)));
+        const current = subStatuses[idx];
+        if (!current || priority[record.status] > priority[current]) {
+          subStatuses[idx] = record.status;
         }
-        
+      }
+
+      // 向前填充空缺（使用最近一次状态），避免检测间隔大时出现灰块
+      let lastKnown = null;
+      for (let i = 0; i < subStatuses.length; i++) {
+        if (subStatuses[i]) {
+          lastKnown = subStatuses[i];
+        } else if (lastKnown) {
+          subStatuses[i] = lastKnown;
+        }
+      }
+
+      // 向后填充开头空缺（使用最早一次状态）
+      const firstKnownIndex = subStatuses.findIndex(status => status !== null);
+      if (firstKnownIndex > 0) {
+        for (let i = 0; i < firstKnownIndex; i++) {
+          subStatuses[i] = subStatuses[firstKnownIndex];
+        }
+      }
+
+      for (let i = 0; i < 12; i++) {
+        const subStatus = subStatuses[i];
         if (useThinLine) {
           // 细竖线模式：空数据保持灰色，warning/down 用细竖线，其余绿色
           if (subStatus === 'warning') {
@@ -980,6 +989,8 @@ const app = {
     document.getElementById('monitor-expected-status').value = '200';
     document.getElementById('monitor-group').value = '';
     document.getElementById('monitor-is-public').checked = false;
+    document.getElementById('monitor-email-notification').checked = false;
+    document.getElementById('monitor-webhook-notification').checked = false;
     this.updateGroupSelect();
     this.togglePortField();
     document.getElementById('monitor-modal').classList.add('active');
@@ -1557,6 +1568,8 @@ const app = {
     document.getElementById('monitor-expected-status').value = monitor.expected_status || 200;
     document.getElementById('monitor-group').value = monitor.group_id || '';
     document.getElementById('monitor-is-public').checked = monitor.is_public === 1 || monitor.is_public === true;
+    document.getElementById('monitor-email-notification').checked = monitor.email_notification === 1 || monitor.email_notification === true;
+    document.getElementById('monitor-webhook-notification').checked = monitor.webhook_notification === 1 || monitor.webhook_notification === true;
     document.getElementById('monitor-auth-username').value = monitor.auth_username || '';
     document.getElementById('monitor-auth-password').value = monitor.auth_password || '';
     
@@ -1611,6 +1624,8 @@ const app = {
       expected_status: type === 'http' ? parseInt(document.getElementById('monitor-expected-status').value) : 200,
       group_id: (groupId && groupId !== '') ? parseInt(groupId) : null,
       is_public: document.getElementById('monitor-is-public').checked,
+      email_notification: document.getElementById('monitor-email-notification').checked,
+      webhook_notification: document.getElementById('monitor-webhook-notification').checked,
       auth_username: type === 'http' ? document.getElementById('monitor-auth-username').value.trim() || null : null,
       auth_password: type === 'http' ? document.getElementById('monitor-auth-password').value || null : null
     };
@@ -2242,6 +2257,8 @@ const app = {
   async showSettingsModal() {
     // 先显示模态框，避免等待
     document.getElementById('settings-modal').classList.add('active');
+    // 切换到基础设置
+    this.switchSettingsSection('general');
     
     // 重置删除确认输入框
     const confirmInput = document.getElementById('delete-all-history-confirm');
@@ -2283,17 +2300,222 @@ const app = {
       const settings = await response.json();
       document.getElementById('public-page-title').value = settings.publicPageTitle || '服务状态监控';
       document.getElementById('log-retention-days').value = settings.logRetentionDays || 30;
+      
+      // 加载管理员邮箱（无论当前显示哪个面板，都先加载数据）
+      // 只在设置面板中查找，避免找到 setup 步骤中的输入框
+      const adminSection = document.getElementById('settings-section-admin');
+      if (adminSection) {
+        const adminEmailInput = adminSection.querySelector('#admin-email');
+        if (adminEmailInput) {
+          const email = settings.adminEmail || '';
+          adminEmailInput.value = email;
+          // 保存邮箱值到数据属性，以便后续使用
+          adminEmailInput.setAttribute('data-loaded-email', email);
+          console.log('设置管理员邮箱:', email, '输入框值:', adminEmailInput.value);
+        } else {
+          console.warn('管理员邮箱输入框未找到');
+        }
+      } else {
+        console.warn('管理员账户面板未找到');
+      }
+      
+      // 加载邮件配置（无论当前显示哪个面板，都先加载数据）
+      document.getElementById('smtp-host').value = settings.smtpHost || '';
+      document.getElementById('smtp-port').value = settings.smtpPort || '587';
+      document.getElementById('smtp-user').value = settings.smtpUser || '';
+      document.getElementById('smtp-password').value = settings.smtpPassword || '';
+      document.getElementById('smtp-from').value = settings.smtpFrom || '';
+      document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
+      
+      // 加载邮件配置（无论当前显示哪个面板，都先加载数据）
+      document.getElementById('smtp-host').value = settings.smtpHost || '';
+      document.getElementById('smtp-port').value = settings.smtpPort || '587';
+      document.getElementById('smtp-user').value = settings.smtpUser || '';
+      document.getElementById('smtp-password').value = settings.smtpPassword || '';
+      document.getElementById('smtp-from').value = settings.smtpFrom || '';
+      document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
+      
+      // 加载 Webhook 配置（无论当前显示哪个面板，都先加载数据）
+      document.getElementById('webhook-url').value = settings.webhookUrl || '';
+      document.getElementById('webhook-method').value = settings.webhookMethod || 'POST';
+      document.getElementById('webhook-headers').value = settings.webhookHeaders || '';
+      
+      // 清空密码字段
+      const adminPasswordInput = document.getElementById('admin-password');
+      const adminPasswordConfirmInput = document.getElementById('admin-password-confirm');
+      if (adminPasswordInput) adminPasswordInput.value = '';
+      if (adminPasswordConfirmInput) adminPasswordConfirmInput.value = '';
     } catch (error) {
       console.error('加载设置失败:', error);
       // 即使出错也使用默认值
       document.getElementById('public-page-title').value = '服务状态监控';
       document.getElementById('log-retention-days').value = 30;
+      const adminEmailInput = document.getElementById('admin-email');
+      if (adminEmailInput) adminEmailInput.value = '';
       this.showToast('加载设置失败，使用默认值', 'warning');
     }
   },
   
   closeSettingsModal() {
     document.getElementById('settings-modal').classList.remove('active');
+    // 重置到第一个菜单项
+    this.switchSettingsSection('general');
+  },
+  
+  switchSettingsSection(section) {
+    // 更新菜单项状态
+    document.querySelectorAll('.settings-menu-item').forEach(item => {
+      item.classList.remove('active');
+      if (item.dataset.section === section) {
+        item.classList.add('active');
+      }
+    });
+    
+    // 显示对应的内容区域
+    document.querySelectorAll('.settings-section').forEach(sec => {
+      sec.style.display = 'none';
+    });
+    
+    const targetSection = document.getElementById(`settings-section-${section}`);
+    if (targetSection) {
+      targetSection.style.display = 'block';
+    }
+    
+    // 如果切换到管理员账户面板，确保邮箱值已加载
+    if (section === 'admin') {
+      // 使用 setTimeout 确保 DOM 已更新后再设置值
+      setTimeout(() => {
+        this.loadAdminEmail();
+      }, 0);
+    }
+    
+    // 如果切换到邮件配置面板，加载邮件配置
+    if (section === 'email') {
+      setTimeout(() => {
+        this.loadEmailConfig();
+      }, 0);
+    }
+  },
+  
+  async loadEmailConfig() {
+    try {
+      const response = await fetch('/api/settings', { credentials: 'same-origin' });
+      if (response.ok) {
+        const settings = await response.json();
+        document.getElementById('smtp-host').value = settings.smtpHost || '';
+        document.getElementById('smtp-port').value = settings.smtpPort || '587';
+        document.getElementById('smtp-user').value = settings.smtpUser || '';
+        document.getElementById('smtp-password').value = settings.smtpPassword || '';
+        document.getElementById('smtp-from').value = settings.smtpFrom || '';
+        document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
+      }
+    } catch (error) {
+      console.error('加载邮件配置失败:', error);
+    }
+  },
+  
+  async testEmail() {
+    const btn = document.getElementById('test-email-btn');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span>发送中...</span>';
+    
+    // 从页面获取邮件配置
+    const smtpHost = document.getElementById('smtp-host').value.trim();
+    const smtpPort = document.getElementById('smtp-port').value.trim();
+    const smtpUser = document.getElementById('smtp-user').value.trim();
+    const smtpPassword = document.getElementById('smtp-password').value;
+    const smtpFrom = document.getElementById('smtp-from').value.trim();
+    const smtpSecure = document.getElementById('smtp-secure').checked;
+    
+    // 验证必填项
+    if (!smtpHost || !smtpUser || !smtpPassword || !smtpFrom) {
+      this.showToast('请先填写完整的邮件配置信息', 'error');
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+      return;
+    }
+    
+    // 获取管理员邮箱
+    const adminSection = document.getElementById('settings-section-admin');
+    const adminEmailInput = adminSection ? adminSection.querySelector('#admin-email') : null;
+    const adminEmail = adminEmailInput ? adminEmailInput.value.trim() : null;
+    
+    if (!adminEmail) {
+      this.showToast('请先设置管理员邮箱', 'error');
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+      return;
+    }
+    
+    try {
+      const response = await fetch('/api/settings/test-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          smtpHost,
+          smtpPort: smtpPort || '587',
+          smtpUser,
+          smtpPassword,
+          smtpFrom,
+          smtpSecure,
+          toEmail: adminEmail
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (response.ok) {
+        this.showToast(data.message || '测试邮件发送成功', 'success');
+      } else {
+        this.showToast(data.error || '测试邮件发送失败', 'error');
+      }
+    } catch (error) {
+      this.showToast('测试邮件发送失败: ' + error.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  },
+  
+  async loadAdminEmail() {
+    try {
+      // 只在设置面板中查找邮箱输入框，避免找到 setup 步骤中的输入框
+      const adminSection = document.getElementById('settings-section-admin');
+      if (!adminSection) {
+        console.warn('管理员账户面板未找到');
+        return;
+      }
+      
+      const adminEmailInput = adminSection.querySelector('#admin-email');
+      if (!adminEmailInput) {
+        console.warn('管理员邮箱输入框未找到');
+        return;
+      }
+      
+      // 先检查是否已有加载的数据
+      const loadedEmail = adminEmailInput.getAttribute('data-loaded-email');
+      if (loadedEmail !== null && loadedEmail !== undefined) {
+        adminEmailInput.value = loadedEmail;
+        console.log('从缓存加载管理员邮箱:', loadedEmail, '输入框值:', adminEmailInput.value);
+        return;
+      }
+      
+      // 如果没有，则从 API 加载
+      const response = await fetch('/api/settings', { credentials: 'same-origin' });
+      if (response.ok) {
+        const settings = await response.json();
+        const email = settings.adminEmail || '';
+        adminEmailInput.value = email;
+        adminEmailInput.setAttribute('data-loaded-email', email);
+        console.log('从API加载管理员邮箱:', email, '输入框值:', adminEmailInput.value);
+      } else {
+        console.error('加载管理员邮箱失败，响应状态:', response.status);
+      }
+    } catch (error) {
+      console.error('加载管理员邮箱失败:', error);
+    }
   },
   
   async saveSettings(event) {
@@ -2307,18 +2529,109 @@ const app = {
       return;
     }
     
+    // 获取管理员邮箱（只在管理员账户面板中查找）
+    const adminSection = document.getElementById('settings-section-admin');
+    const adminEmailInput = adminSection ? adminSection.querySelector('#admin-email') : null;
+    const adminEmail = adminEmailInput ? adminEmailInput.value.trim() || null : null;
+    
+    // 获取密码（如果填写了）
+    const adminPassword = document.getElementById('admin-password').value;
+    const adminPasswordConfirm = document.getElementById('admin-password-confirm').value;
+    
+    // 如果填写了密码，验证密码
+    if (adminPassword) {
+      if (adminPassword.length < 6) {
+        this.showToast('密码长度至少6位', 'error');
+        return;
+      }
+      
+      if (adminPassword !== adminPasswordConfirm) {
+        this.showToast('两次输入的密码不一致', 'error');
+        return;
+      }
+    }
+    
+    // 获取邮件配置
+    const smtpHost = document.getElementById('smtp-host').value.trim();
+    const smtpPort = document.getElementById('smtp-port').value.trim();
+    const smtpUser = document.getElementById('smtp-user').value.trim();
+    const smtpPassword = document.getElementById('smtp-password').value;
+    const smtpFrom = document.getElementById('smtp-from').value.trim();
+    const smtpSecure = document.getElementById('smtp-secure').checked;
+    
+    // 获取 Webhook 配置
+    const webhookUrl = document.getElementById('webhook-url').value.trim();
+    const webhookMethod = document.getElementById('webhook-method').value;
+    const webhookHeadersText = document.getElementById('webhook-headers').value.trim();
+    let webhookHeaders = {};
+    if (webhookHeadersText) {
+      try {
+        webhookHeaders = JSON.parse(webhookHeadersText);
+      } catch (e) {
+        this.showToast('Webhook 请求头格式错误，必须是有效的 JSON', 'error');
+        return;
+      }
+    }
+    
     try {
+      const requestBody = { 
+        publicPageTitle, 
+        logRetentionDays,
+        adminEmail: adminEmail || null,
+        smtpHost,
+        smtpPort,
+        smtpUser,
+        smtpPassword,
+        smtpFrom,
+        smtpSecure
+      };
+      
+      // 只有在填写了密码时才发送密码字段
+      if (adminPassword) {
+        requestBody.adminPassword = adminPassword;
+        requestBody.adminPasswordConfirm = adminPasswordConfirm;
+      }
+      
       const response = await fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
-        body: JSON.stringify({ publicPageTitle, logRetentionDays })
+        body: JSON.stringify(requestBody)
       });
       
       if (!response.ok) {
         const data = await response.json();
         throw new Error(data.error || '保存失败');
       }
+      
+      // 如果更新了密码，清空密码字段
+      if (adminPassword) {
+        document.getElementById('admin-password').value = '';
+        document.getElementById('admin-password-confirm').value = '';
+      }
+      
+      // 更新显示
+      const settings = await response.json();
+      const adminSection = document.getElementById('settings-section-admin');
+      if (adminSection) {
+        const adminEmailInput = adminSection.querySelector('#admin-email');
+        if (adminEmailInput) {
+          adminEmailInput.value = settings.adminEmail || '';
+        }
+      }
+      
+      // 更新邮件配置显示
+      document.getElementById('smtp-host').value = settings.smtpHost || '';
+      document.getElementById('smtp-port').value = settings.smtpPort || '587';
+      document.getElementById('smtp-user').value = settings.smtpUser || '';
+      document.getElementById('smtp-password').value = settings.smtpPassword || '';
+      document.getElementById('smtp-from').value = settings.smtpFrom || '';
+      document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
+      
+      // 更新 Webhook 配置显示
+      document.getElementById('webhook-url').value = settings.webhookUrl || '';
+      document.getElementById('webhook-method').value = settings.webhookMethod || 'POST';
+      document.getElementById('webhook-headers').value = settings.webhookHeaders || '';
       
       this.closeSettingsModal();
       this.showToast('设置已保存', 'success');

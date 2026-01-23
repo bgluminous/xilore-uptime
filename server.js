@@ -10,6 +10,7 @@ const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -268,7 +269,29 @@ async function initializeTables() {
       console.log('✓ 已添加 retries 列');
     }
   } catch (e) {
-    console.error('添加 retries 列失败:', e.message);
+    // 忽略迁移错误
+  }
+  
+  // 添加 email_notification 列（如果不存在）
+  try {
+    const [columns] = await pool.execute(`SHOW COLUMNS FROM monitors LIKE 'email_notification'`);
+    if (columns.length === 0) {
+      await pool.execute(`ALTER TABLE monitors ADD COLUMN email_notification TINYINT(1) DEFAULT 0 AFTER is_public`);
+      console.log('✓ 已添加 email_notification 列');
+    }
+  } catch (e) {
+    console.error('添加 email_notification 列失败:', e.message);
+  }
+  
+  // 添加 webhook_notification 列（如果不存在）
+  try {
+    const [columns] = await pool.execute(`SHOW COLUMNS FROM monitors LIKE 'webhook_notification'`);
+    if (columns.length === 0) {
+      await pool.execute(`ALTER TABLE monitors ADD COLUMN webhook_notification TINYINT(1) DEFAULT 0 AFTER email_notification`);
+      console.log('✓ 已添加 webhook_notification 列');
+    }
+  } catch (e) {
+    console.error('添加 webhook_notification 列失败:', e.message);
   }
   
   // 添加 expected_status 列（如果不存在）
@@ -903,6 +926,314 @@ async function checkPing(target, timeoutSeconds) {
   });
 }
 
+// 发送邮件通知
+async function sendEmailNotification(monitor, oldStatus, newStatus, message, responseTime) {
+  try {
+    // 获取邮件配置
+    const [smtpRows] = await pool.execute(
+      'SELECT key_name, value FROM settings WHERE key_name IN (?, ?, ?, ?, ?, ?)',
+      ['smtpHost', 'smtpPort', 'smtpUser', 'smtpPassword', 'smtpFrom', 'smtpSecure']
+    );
+    
+    if (smtpRows.length === 0 || !smtpRows.find(r => r.key_name === 'smtpHost' && r.value)) {
+      log('WARN', '邮件配置未设置，跳过发送', { monitorId: monitor.id });
+      return;
+    }
+    
+    const config = {};
+    smtpRows.forEach(row => {
+      const key = row.key_name;
+      const value = row.value;
+      if (key === 'smtpHost') config.host = value;
+      else if (key === 'smtpPort') config.port = parseInt(value) || 587;
+      else if (key === 'smtpUser') config.user = value;
+      else if (key === 'smtpPassword') config.password = value;
+      else if (key === 'smtpFrom') config.from = value;
+      else if (key === 'smtpSecure') config.secure = value === '1' || value === 'true';
+    });
+    
+    if (!config.host || !config.user || !config.password || !config.from) {
+      log('WARN', '邮件配置不完整，跳过发送', { monitorId: monitor.id });
+      return;
+    }
+    
+    // 获取管理员邮箱
+    const [userRows] = await pool.execute('SELECT email FROM users WHERE role = ? LIMIT 1', ['admin']);
+    if (userRows.length === 0 || !userRows[0].email) {
+      log('WARN', '管理员邮箱未设置，跳过发送', { monitorId: monitor.id });
+      return;
+    }
+    
+    const toEmail = userRows[0].email;
+    
+    // 创建邮件传输器
+    const transporter = nodemailer.createTransport({
+      host: config.host,
+      port: config.port,
+      secure: config.secure || false,
+      auth: {
+        user: config.user,
+        pass: config.password
+      }
+    });
+    
+    // 构建邮件内容
+    const statusText = newStatus === 'up' ? '已恢复' : '已离线';
+    const statusColor = newStatus === 'up' ? '#10b981' : '#ef4444';
+    const statusBgColor = newStatus === 'up' ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)' : 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
+    const statusIcon = newStatus === 'up' ? '✓' : '✕';
+    const oldStatusText = oldStatus === 'up' ? '在线' : oldStatus === 'down' ? '离线' : '未知';
+    const newStatusText = newStatus === 'up' ? '在线' : '离线';
+    const checkTime = new Date().toLocaleString('zh-CN');
+    const targetAddress = monitor.target + (monitor.port ? ':' + monitor.port : '');
+    const typeText = monitor.type.toUpperCase();
+    
+    const subject = `${newStatus === 'up' ? '✅' : '❌'} 监控告警: ${monitor.name} ${statusText}`;
+    
+    const html = `
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>监控告警 - ${monitor.name}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif; background-color: #f5f7fa; line-height: 1.6;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color: #f5f7fa; padding: 40px 20px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="600" style="max-width: 600px; background-color: #ffffff; border-radius: 6px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07); overflow: hidden;">
+          <!-- Header -->
+          <tr>
+            <td style="background: ${statusBgColor}; padding: 32px 40px; text-align: center;">
+              <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 600; letter-spacing: -0.5px;">
+                监控状态变化
+              </h1>
+            </td>
+          </tr>
+          
+          <!-- Content -->
+          <tr>
+            <td style="padding: 40px;">
+              <!-- Status Icon -->
+              <div style="text-align: center; margin-bottom: 24px;">
+                <div style="display: inline-block; width: 64px; height: 64px; background-color: ${statusColor}; border-radius: 50%; line-height: 64px; font-size: 32px; color: #ffffff; font-weight: bold;">
+                  ${statusIcon}
+                </div>
+              </div>
+              
+              <!-- Main Message -->
+              <h2 style="margin: 0 0 8px 0; color: #1e293b; font-size: 20px; font-weight: 600; text-align: center;">
+                ${monitor.name}
+              </h2>
+              <p style="margin: 0 0 32px 0; color: ${statusColor}; font-size: 16px; font-weight: 600; text-align: center;">
+                ${statusText}
+              </p>
+              
+              <!-- Info Card -->
+              <div style="background-color: #f5f7fa; border-radius: 6px; padding: 24px; margin-bottom: 24px;">
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                  <tr>
+                    <td style="padding-bottom: 12px; border-bottom: 1px solid #e2e8f0;">
+                      <div style="display: flex; align-items: center; gap: 12px;">
+                        <div style="width: 4px; height: 20px; background-color: ${statusColor}; border-radius: 2px;"></div>
+                        <span style="color: #1e293b; font-size: 14px; font-weight: 600;">监控详情</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding-top: 16px;">
+                      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                        <tr>
+                          <td style="padding: 8px 0; color: #64748b; font-size: 14px; width: 100px;">目标地址</td>
+                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${targetAddress}</td>
+                        </tr>
+                        <tr>
+                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">检测类型</td>
+                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${typeText}</td>
+                        </tr>
+                        <tr>
+                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">状态变化</td>
+                          <td style="padding: 8px 0;">
+                            <span style="color: #64748b; font-size: 14px;">${oldStatusText}</span>
+                            <span style="color: #94a3b8; margin: 0 8px;">→</span>
+                            <span style="color: ${statusColor}; font-size: 14px; font-weight: 600;">${newStatusText}</span>
+                          </td>
+                        </tr>
+                        <tr>
+                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">响应时间</td>
+                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${responseTime ? responseTime + 'ms' : '超时'}</td>
+                        </tr>
+                        <tr>
+                          <td style="padding: 8px 0; color: #64748b; font-size: 14px; vertical-align: top;">详细信息</td>
+                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${message || '无'}</td>
+                        </tr>
+                        <tr>
+                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">检测时间</td>
+                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${checkTime}</td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+              
+              <!-- Footer Note -->
+              <p style="margin: 0; color: #94a3b8; font-size: 13px; text-align: center; line-height: 1.5;">
+                此邮件由 <strong style="color: #2563eb;">Xilore Uptime</strong> 自动发送<br>
+                当监控服务状态发生变化时，您将收到类似的通知邮件
+              </p>
+            </td>
+          </tr>
+          
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #f5f7fa; padding: 20px 40px; text-align: center; border-top: 1px solid #e2e8f0;">
+              <p style="margin: 0; color: #94a3b8; font-size: 12px;">
+                © ${new Date().getFullYear()} Xilore Uptime · 服务状态监控系统
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+    `;
+    
+    // 发送邮件
+    await transporter.sendMail({
+      from: config.from,
+      to: toEmail,
+      subject: subject,
+      html: html
+    });
+    
+    log('INFO', '邮件通知发送成功', { monitorId: monitor.id, to: toEmail });
+  } catch (error) {
+    log('ERROR', '发送邮件通知失败', { monitorId: monitor.id, error: error.message });
+    throw error;
+  }
+}
+
+// 发送 Webhook 通知
+async function sendWebhookNotification(monitor, oldStatus, newStatus, message, responseTime) {
+  try {
+    // 获取 Webhook 配置
+    const [webhookRows] = await pool.execute(
+      'SELECT key_name, value FROM settings WHERE key_name IN (?, ?, ?)',
+      ['webhookUrl', 'webhookMethod', 'webhookHeaders']
+    );
+    
+    if (webhookRows.length === 0 || !webhookRows.find(r => r.key_name === 'webhookUrl' && r.value)) {
+      log('WARN', 'Webhook 配置未设置，跳过发送', { monitorId: monitor.id });
+      return;
+    }
+    
+    const config = {};
+    webhookRows.forEach(row => {
+      const key = row.key_name;
+      const value = row.value;
+      if (key === 'webhookUrl') config.url = value;
+      else if (key === 'webhookMethod') config.method = value || 'POST';
+      else if (key === 'webhookHeaders') {
+        try {
+          config.headers = value ? JSON.parse(value) : {};
+        } catch (e) {
+          config.headers = {};
+        }
+      }
+    });
+    
+    if (!config.url) {
+      log('WARN', 'Webhook URL 未设置，跳过发送', { monitorId: monitor.id });
+      return;
+    }
+    
+    const method = (config.method || 'POST').toUpperCase();
+    const headers = {
+      'Content-Type': 'application/json',
+      'User-Agent': 'Xilore-Uptime/1.0',
+      ...config.headers
+    };
+    
+    // 构建请求体
+    const payload = {
+      event: 'monitor_status_changed',
+      monitor: {
+        id: monitor.id,
+        name: monitor.name,
+        type: monitor.type,
+        target: monitor.target,
+        port: monitor.port
+      },
+      status: {
+        old: oldStatus || 'unknown',
+        new: newStatus,
+        text: newStatus === 'up' ? '在线' : '离线'
+      },
+      check: {
+        responseTime: responseTime,
+        message: message || '无',
+        timestamp: new Date().toISOString(),
+        time: new Date().toLocaleString('zh-CN')
+      }
+    };
+    
+    // 发送 Webhook 请求
+    const url = require('url');
+    const parsedUrl = url.parse(config.url);
+    const httpModule = parsedUrl.protocol === 'https:' ? require('https') : require('http');
+    
+    const requestOptions = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+      path: parsedUrl.path,
+      method: method,
+      headers: headers,
+      timeout: 10000 // 10秒超时
+    };
+    
+    await new Promise((resolve, reject) => {
+      const req = httpModule.request(requestOptions, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            log('INFO', 'Webhook 通知发送成功', { monitorId: monitor.id, statusCode: res.statusCode });
+            resolve();
+          } else {
+            log('WARN', 'Webhook 通知返回非成功状态码', { monitorId: monitor.id, statusCode: res.statusCode });
+            resolve(); // 不抛出错误，只记录警告
+          }
+        });
+      });
+      
+      req.on('error', (err) => {
+        log('ERROR', 'Webhook 请求失败', { monitorId: monitor.id, error: err.message });
+        reject(err);
+      });
+      
+      req.on('timeout', () => {
+        req.destroy();
+        log('ERROR', 'Webhook 请求超时', { monitorId: monitor.id });
+        reject(new Error('Request timeout'));
+      });
+      
+      if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+        req.write(JSON.stringify(payload));
+      }
+      
+      req.end();
+    });
+    
+  } catch (error) {
+    log('ERROR', '发送 Webhook 通知失败', { monitorId: monitor.id, error: error.message });
+    throw error;
+  }
+}
+
 // 单次检测
 async function singleCheck(monitor) {
   const timeout = monitor.timeout_seconds || 10;
@@ -947,12 +1278,24 @@ async function performCheck(monitor) {
     result.message += ` (重试 ${retryCount} 次)`;
   }
   
+  // 获取旧状态，用于检测状态变化
+  const [oldMonitorRows] = await pool.execute('SELECT status FROM monitors WHERE id = ?', [monitor.id]);
+  const oldStatus = oldMonitorRows.length > 0 ? oldMonitorRows[0].status : null;
+  
   // 更新监控状态（超时时 responseTime 为 null）
   // 注意：监控状态仍然使用原始的up/down，不使用warning
   await pool.execute(
     'UPDATE monitors SET status = ?, last_check = NOW(), last_response_time = ? WHERE id = ?',
     [result.status, result.responseTime || null, monitor.id]
   );
+  
+  // 检测状态变化，如果启用了邮件通知，则发送邮件
+  if (monitor.email_notification && oldStatus !== result.status) {
+    // 异步发送邮件，不阻塞检测流程
+    sendEmailNotification(monitor, oldStatus, result.status, result.message, result.responseTime).catch(err => {
+      log('ERROR', '发送邮件通知失败', { monitorId: monitor.id, error: err.message });
+    });
+  }
   
   // 记录历史（超时时 responseTime 为 null）
   // 如果重试后才成功，历史记录中使用warning状态
@@ -1252,7 +1595,7 @@ app.get('/api/monitors/:id', authMiddleware, async (req, res) => {
 });
 
 app.post('/api/monitors', authMiddleware, async (req, res) => {
-  const { name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status, group_id, is_public, auth_username, auth_password } = req.body;
+  const { name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status, group_id, is_public, email_notification, webhook_notification, auth_username, auth_password } = req.body;
   
   if (!name || !type || !target) {
     return res.status(400).json({ error: '缺少必要参数' });
@@ -1272,8 +1615,8 @@ app.post('/api/monitors', authMiddleware, async (req, res) => {
   
   try {
     const [result] = await pool.execute(
-      'INSERT INTO monitors (name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status, group_id, is_public, auth_username, auth_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [name, type, target, port || null, interval_seconds || 60, timeout_seconds || 10, validRetries, validExpectedStatus, group_id || null, is_public ? 1 : 0, validAuthUsername, validAuthPassword]
+      'INSERT INTO monitors (name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status, group_id, is_public, email_notification, auth_username, auth_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, type, target, port || null, interval_seconds || 60, timeout_seconds || 10, validRetries, validExpectedStatus, group_id || null, is_public ? 1 : 0, email_notification ? 1 : 0, validAuthUsername, validAuthPassword]
     );
     
     const [rows] = await pool.execute('SELECT * FROM monitors WHERE id = ?', [result.insertId]);
@@ -1296,7 +1639,7 @@ app.post('/api/monitors', authMiddleware, async (req, res) => {
 });
 
 app.put('/api/monitors/:id', authMiddleware, async (req, res) => {
-  const { name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status, group_id, enabled, is_public, auth_username, auth_password } = req.body;
+  const { name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status, group_id, enabled, is_public, email_notification, webhook_notification, auth_username, auth_password } = req.body;
   const id = req.params.id;
   
   // 确保所有参数都不是 undefined，统一转换为 null 或有效值
@@ -1344,6 +1687,7 @@ app.put('/api/monitors/:id', authMiddleware, async (req, res) => {
       validGroupId,
       safeBool(enabled),
       is_public !== undefined ? (is_public ? 1 : 0) : null,
+      email_notification !== undefined ? (email_notification ? 1 : 0) : null,
       finalAuthUsername,
       finalAuthPassword,
       id
@@ -1362,6 +1706,7 @@ app.put('/api/monitors/:id', authMiddleware, async (req, res) => {
         group_id = ?,
         enabled = COALESCE(?, enabled),
         is_public = COALESCE(?, is_public),
+        email_notification = COALESCE(?, email_notification),
         auth_username = ?,
         auth_password = ?
         WHERE id = ?`,
@@ -1680,7 +2025,8 @@ app.get('/api/settings', authMiddleware, async (req, res) => {
     if (!pool) {
       return res.json({ 
         publicPageTitle: '服务状态监控',
-        logRetentionDays: 30 
+        logRetentionDays: 30,
+        adminEmail: null
       });
     }
     
@@ -1705,24 +2051,297 @@ app.get('/api/settings', authMiddleware, async (req, res) => {
         ? parseInt(retentionRows[0].value, 10) 
         : 30;
       
+      // 获取当前管理员邮箱
+      let adminEmail = null;
+      if (req.user && req.user.username) {
+        const [userRows] = await pool.execute(
+          'SELECT email FROM users WHERE username = ? AND role = ?',
+          [req.user.username, 'admin']
+        );
+        if (userRows.length > 0) {
+          adminEmail = userRows[0].email || null;
+        }
+      }
+      
+      // 获取邮件配置
+      const [smtpRows] = await pool.execute(
+        'SELECT key_name, value FROM settings WHERE key_name IN (?, ?, ?, ?, ?, ?)',
+        ['smtpHost', 'smtpPort', 'smtpUser', 'smtpPassword', 'smtpFrom', 'smtpSecure']
+      );
+      
+      const smtpConfig = {};
+      smtpRows.forEach(row => {
+        smtpConfig[row.key_name] = row.value || '';
+      });
+      
+      // 获取 Webhook 配置
+      const [webhookRows] = await pool.execute(
+        'SELECT key_name, value FROM settings WHERE key_name IN (?, ?, ?)',
+        ['webhookUrl', 'webhookMethod', 'webhookHeaders']
+      );
+      
+      const webhookConfig = {};
+      webhookRows.forEach(row => {
+        webhookConfig[row.key_name] = row.value || '';
+      });
+      
       res.json({ 
         publicPageTitle,
-        logRetentionDays: isNaN(logRetentionDays) ? 30 : logRetentionDays
+        logRetentionDays: isNaN(logRetentionDays) ? 30 : logRetentionDays,
+        adminEmail,
+        smtpHost: smtpConfig.smtpHost || '',
+        smtpPort: smtpConfig.smtpPort || '587',
+        smtpUser: smtpConfig.smtpUser || '',
+        smtpPassword: smtpConfig.smtpPassword || '',
+        smtpFrom: smtpConfig.smtpFrom || '',
+        smtpSecure: smtpConfig.smtpSecure === '1' || smtpConfig.smtpSecure === 'true',
+        webhookUrl: webhookConfig.webhookUrl || '',
+        webhookMethod: webhookConfig.webhookMethod || 'POST',
+        webhookHeaders: webhookConfig.webhookHeaders || ''
       });
     } catch (dbError) {
       // 如果表不存在或其他数据库错误，返回默认值
       log('WARN', '获取设置失败，使用默认值', { error: dbError.message, user: req.user?.username });
       res.json({ 
         publicPageTitle: '服务状态监控',
-        logRetentionDays: 30 
+        logRetentionDays: 30,
+        adminEmail: null
       });
     }
   } catch (e) {
     log('ERROR', '获取设置失败', { error: e.message, user: req.user?.username });
     res.json({ 
       publicPageTitle: '服务状态监控',
-      logRetentionDays: 30 
+      logRetentionDays: 30,
+      adminEmail: null
     });
+  }
+});
+
+app.post('/api/settings/test-webhook', authMiddleware, async (req, res) => {
+  try {
+    // 从请求体获取 Webhook 配置（从页面表单获取）
+    const { webhookUrl, webhookMethod, webhookHeaders } = req.body;
+    
+    // 验证必填项
+    if (!webhookUrl) {
+      return res.status(400).json({ error: 'Webhook URL 不能为空' });
+    }
+    
+    const method = (webhookMethod || 'POST').toUpperCase();
+    let headers = {
+      'Content-Type': 'application/json',
+      'User-Agent': 'Xilore-Uptime/1.0'
+    };
+    
+    // 解析请求头
+    if (webhookHeaders) {
+      try {
+        const customHeaders = typeof webhookHeaders === 'string' ? JSON.parse(webhookHeaders) : webhookHeaders;
+        headers = { ...headers, ...customHeaders };
+      } catch (e) {
+        return res.status(400).json({ error: '请求头格式错误，必须是有效的 JSON' });
+      }
+    }
+    
+    // 构建测试请求体
+    const payload = {
+      event: 'test',
+      message: '这是一条测试 Webhook 消息',
+      timestamp: new Date().toISOString(),
+      time: new Date().toLocaleString('zh-CN')
+    };
+    
+    // 发送 Webhook 请求
+    const url = require('url');
+    const parsedUrl = url.parse(webhookUrl);
+    const httpModule = parsedUrl.protocol === 'https:' ? require('https') : require('http');
+    
+    const requestOptions = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+      path: parsedUrl.path,
+      method: method,
+      headers: headers,
+      timeout: 10000 // 10秒超时
+    };
+    
+    await new Promise((resolve, reject) => {
+      const req = httpModule.request(requestOptions, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            log('INFO', '测试 Webhook 发送成功', { statusCode: res.statusCode, user: req.user?.username });
+            resolve();
+          } else {
+            log('WARN', '测试 Webhook 返回非成功状态码', { statusCode: res.statusCode, user: req.user?.username });
+            reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 100)}`));
+          }
+        });
+      });
+      
+      req.on('error', (err) => {
+        log('ERROR', '测试 Webhook 请求失败', { error: err.message, user: req.user?.username });
+        reject(err);
+      });
+      
+      req.on('timeout', () => {
+        req.destroy();
+        log('ERROR', '测试 Webhook 请求超时', { user: req.user?.username });
+        reject(new Error('Request timeout'));
+      });
+      
+      if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+        req.write(JSON.stringify(payload));
+      }
+      
+      req.end();
+    });
+    
+    res.json({ success: true, message: 'Webhook 测试成功' });
+  } catch (error) {
+    log('ERROR', '测试 Webhook 失败', { error: error.message, user: req.user?.username });
+    res.status(500).json({ error: '测试失败: ' + error.message });
+  }
+});
+
+app.post('/api/settings/test-email', authMiddleware, async (req, res) => {
+  try {
+    // 从请求体获取邮件配置（从页面表单获取）
+    const { smtpHost, smtpPort, smtpUser, smtpPassword, smtpFrom, smtpSecure, toEmail } = req.body;
+    
+    // 验证必填项
+    if (!smtpHost || !smtpUser || !smtpPassword || !smtpFrom || !toEmail) {
+      return res.status(400).json({ error: '邮件配置不完整' });
+    }
+    
+    const port = parseInt(smtpPort) || 587;
+    const secure = smtpSecure === true || smtpSecure === 'true' || smtpSecure === 1;
+    
+    // 创建邮件传输器
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: port,
+      secure: secure,
+      auth: {
+        user: smtpUser,
+        pass: smtpPassword
+      }
+    });
+    
+    // 发送测试邮件
+    const sendTime = new Date().toLocaleString('zh-CN');
+    await transporter.sendMail({
+      from: smtpFrom,
+      to: toEmail,
+      subject: '测试邮件 - Xilore Uptime',
+      html: `
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>测试邮件 - Xilore Uptime</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif; background-color: #f5f7fa; line-height: 1.6;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color: #f5f7fa; padding: 40px 20px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="600" style="max-width: 600px; background-color: #ffffff; border-radius: 6px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07); overflow: hidden;">
+          <!-- Header -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); padding: 32px 40px; text-align: center;">
+              <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 600; letter-spacing: -0.5px;">
+                测试邮件
+              </h1>
+            </td>
+          </tr>
+          
+          <!-- Content -->
+          <tr>
+            <td style="padding: 40px;">
+              <!-- Success Icon -->
+              <div style="text-align: center; margin-bottom: 24px;">
+                <div style="display: inline-block; width: 64px; height: 64px; background-color: #10b981; border-radius: 50%; line-height: 64px; font-size: 32px;">
+                  ✓
+                </div>
+              </div>
+              
+              <!-- Main Message -->
+              <h2 style="margin: 0 0 16px 0; color: #1e293b; font-size: 20px; font-weight: 600; text-align: center;">
+                邮件配置成功！
+              </h2>
+              <p style="margin: 0 0 32px 0; color: #64748b; font-size: 15px; text-align: center; line-height: 1.6;">
+                如果您收到这封邮件，说明您的邮件配置已成功，系统可以正常发送通知邮件。
+              </p>
+              
+              <!-- Info Card -->
+              <div style="background-color: #f5f7fa; border-radius: 6px; padding: 24px; margin-bottom: 24px;">
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                  <tr>
+                    <td style="padding-bottom: 12px; border-bottom: 1px solid #e2e8f0;">
+                      <div style="display: flex; align-items: center; gap: 12px;">
+                        <div style="width: 4px; height: 20px; background-color: #2563eb; border-radius: 2px;"></div>
+                        <span style="color: #1e293b; font-size: 14px; font-weight: 600;">配置信息</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding-top: 16px;">
+                      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                        <tr>
+                          <td style="padding: 8px 0; color: #64748b; font-size: 14px; width: 100px;">发送时间</td>
+                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${sendTime}</td>
+                        </tr>
+                        <tr>
+                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">SMTP 服务器</td>
+                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${smtpHost}:${port}</td>
+                        </tr>
+                        <tr>
+                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">安全连接</td>
+                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${secure ? 'SSL/TLS' : 'STARTTLS'}</td>
+                        </tr>
+                        <tr>
+                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">发件人</td>
+                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${smtpFrom}</td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+              
+              <!-- Footer Note -->
+              <p style="margin: 0; color: #94a3b8; font-size: 13px; text-align: center; line-height: 1.5;">
+                此邮件由 <strong style="color: #2563eb;">Xilore Uptime</strong> 自动发送<br>
+                当监控服务状态发生变化时，您将收到类似的通知邮件
+              </p>
+            </td>
+          </tr>
+          
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #f5f7fa; padding: 20px 40px; text-align: center; border-top: 1px solid #e2e8f0;">
+              <p style="margin: 0; color: #94a3b8; font-size: 12px;">
+                © ${new Date().getFullYear()} Xilore Uptime · 服务状态监控系统
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+      `
+    });
+    
+    log('INFO', '测试邮件发送成功', { to: toEmail, user: req.user?.username });
+    res.json({ success: true, message: '测试邮件已发送到 ' + toEmail });
+  } catch (error) {
+    log('ERROR', '测试邮件发送失败', { error: error.message, user: req.user?.username });
+    res.status(500).json({ error: '发送失败: ' + error.message });
   }
 });
 
@@ -1732,7 +2351,7 @@ app.put('/api/settings', authMiddleware, async (req, res) => {
       return res.status(500).json({ error: '数据库未连接' });
     }
     
-    const { publicPageTitle, logRetentionDays } = req.body;
+    const { publicPageTitle, logRetentionDays, adminEmail, adminPassword, adminPasswordConfirm, smtpHost, smtpPort, smtpUser, smtpPassword, smtpFrom, smtpSecure, webhookUrl, webhookMethod, webhookHeaders } = req.body;
     
     if (publicPageTitle !== undefined) {
       const value = publicPageTitle || '服务状态监控';
@@ -1770,6 +2389,91 @@ app.put('/api/settings', authMiddleware, async (req, res) => {
       scheduleLogCleanup();
     }
     
+    // 更新管理员邮箱
+    if (adminEmail !== undefined && req.user && req.user.username) {
+      const email = adminEmail ? adminEmail.trim() : null;
+      await pool.execute(
+        'UPDATE users SET email = ? WHERE username = ? AND role = ?',
+        [email, req.user.username, 'admin']
+      );
+      log('INFO', '更新管理员邮箱成功', { email, user: req.user.username });
+    }
+    
+    // 更新管理员密码
+    if (adminPassword !== undefined && adminPassword !== null && adminPassword !== '') {
+      if (adminPassword.length < 6) {
+        return res.status(400).json({ error: '密码长度至少6位' });
+      }
+      
+      if (adminPassword !== adminPasswordConfirm) {
+        return res.status(400).json({ error: '两次输入的密码不一致' });
+      }
+      
+      if (req.user && req.user.username) {
+        const hashedPassword = await bcrypt.hash(adminPassword, 10);
+        await pool.execute(
+          'UPDATE users SET password = ? WHERE username = ? AND role = ?',
+          [hashedPassword, req.user.username, 'admin']
+        );
+        log('INFO', '更新管理员密码成功', { user: req.user.username });
+      }
+    }
+    
+    // 更新邮件配置
+    if (smtpHost !== undefined) {
+      await pool.execute(
+        `INSERT INTO settings (key_name, value) 
+         VALUES (?, ?) 
+         ON DUPLICATE KEY UPDATE value = ?, updated_at = CURRENT_TIMESTAMP`,
+        ['smtpHost', smtpHost || '', smtpHost || '']
+      );
+    }
+    
+    if (smtpPort !== undefined) {
+      await pool.execute(
+        `INSERT INTO settings (key_name, value) 
+         VALUES (?, ?) 
+         ON DUPLICATE KEY UPDATE value = ?, updated_at = CURRENT_TIMESTAMP`,
+        ['smtpPort', smtpPort || '587', smtpPort || '587']
+      );
+    }
+    
+    if (smtpUser !== undefined) {
+      await pool.execute(
+        `INSERT INTO settings (key_name, value) 
+         VALUES (?, ?) 
+         ON DUPLICATE KEY UPDATE value = ?, updated_at = CURRENT_TIMESTAMP`,
+        ['smtpUser', smtpUser || '', smtpUser || '']
+      );
+    }
+    
+    if (smtpPassword !== undefined) {
+      await pool.execute(
+        `INSERT INTO settings (key_name, value) 
+         VALUES (?, ?) 
+         ON DUPLICATE KEY UPDATE value = ?, updated_at = CURRENT_TIMESTAMP`,
+        ['smtpPassword', smtpPassword || '', smtpPassword || '']
+      );
+    }
+    
+    if (smtpFrom !== undefined) {
+      await pool.execute(
+        `INSERT INTO settings (key_name, value) 
+         VALUES (?, ?) 
+         ON DUPLICATE KEY UPDATE value = ?, updated_at = CURRENT_TIMESTAMP`,
+        ['smtpFrom', smtpFrom || '', smtpFrom || '']
+      );
+    }
+    
+    if (smtpSecure !== undefined) {
+      await pool.execute(
+        `INSERT INTO settings (key_name, value) 
+         VALUES (?, ?) 
+         ON DUPLICATE KEY UPDATE value = ?, updated_at = CURRENT_TIMESTAMP`,
+        ['smtpSecure', smtpSecure ? '1' : '0', smtpSecure ? '1' : '0']
+      );
+    }
+    
     // 返回更新后的设置
     const [titleRows] = await pool.execute(
       'SELECT value FROM settings WHERE key_name = ?',
@@ -1789,9 +2493,53 @@ app.put('/api/settings', authMiddleware, async (req, res) => {
       ? parseInt(retentionRows[0].value, 10) 
       : 30;
     
+    // 获取更新后的管理员邮箱
+    let updatedEmail = null;
+    if (req.user && req.user.username) {
+      const [userRows] = await pool.execute(
+        'SELECT email FROM users WHERE username = ? AND role = ?',
+        [req.user.username, 'admin']
+      );
+      if (userRows.length > 0) {
+        updatedEmail = userRows[0].email || null;
+      }
+    }
+    
+    // 获取更新后的邮件配置
+    const [updatedSmtpRows] = await pool.execute(
+      'SELECT key_name, value FROM settings WHERE key_name IN (?, ?, ?, ?, ?, ?)',
+      ['smtpHost', 'smtpPort', 'smtpUser', 'smtpPassword', 'smtpFrom', 'smtpSecure']
+    );
+    
+    const updatedSmtpConfig = {};
+    updatedSmtpRows.forEach(row => {
+      updatedSmtpConfig[row.key_name] = row.value || '';
+    });
+    
+    // 获取更新后的 Webhook 配置
+    const [updatedWebhookRows] = await pool.execute(
+      'SELECT key_name, value FROM settings WHERE key_name IN (?, ?, ?)',
+      ['webhookUrl', 'webhookMethod', 'webhookHeaders']
+    );
+    
+    const updatedWebhookConfig = {};
+    updatedWebhookRows.forEach(row => {
+      updatedWebhookConfig[row.key_name] = row.value || '';
+    });
+    
     res.json({ 
       publicPageTitle: updatedTitle,
-      logRetentionDays: isNaN(updatedRetention) ? 30 : updatedRetention
+      logRetentionDays: isNaN(updatedRetention) ? 30 : updatedRetention,
+      adminEmail: updatedEmail,
+      smtpHost: updatedSmtpConfig.smtpHost || '',
+      smtpPort: updatedSmtpConfig.smtpPort || '587',
+      smtpUser: updatedSmtpConfig.smtpUser || '',
+      smtpPassword: updatedSmtpConfig.smtpPassword || '',
+      smtpFrom: updatedSmtpConfig.smtpFrom || '',
+      smtpSecure: updatedSmtpConfig.smtpSecure === '1' || updatedSmtpConfig.smtpSecure === 'true',
+      webhookUrl: updatedWebhookConfig.webhookUrl || '',
+      webhookMethod: updatedWebhookConfig.webhookMethod || 'POST',
+      webhookHeaders: updatedWebhookConfig.webhookHeaders || ''
     });
   } catch (e) {
     log('ERROR', '更新设置失败', { error: e.message, user: req.user?.username });
