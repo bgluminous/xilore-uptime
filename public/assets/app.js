@@ -578,7 +578,6 @@ const app = {
       }
       if (response.ok) {
         this.groups = await response.json();
-        console.log('分组数据加载成功:', this.groups.length, '个分组');
         await this.normalizeGroupOrder();
         this.sortGroups();
         this.updateGroupSelect();
@@ -652,7 +651,6 @@ const app = {
         throw new Error(errorData.error || '加载失败');
       }
       const data = await response.json();
-      console.log('监控数据加载成功:', data.length, '条记录');
       this.monitors = data;
       this.renderList();
       
@@ -714,7 +712,6 @@ const app = {
     try {
       const container = document.getElementById('monitor-list');
       if (!container) {
-        console.error('找不到monitor-list容器');
         return;
       }
       
@@ -1072,9 +1069,7 @@ const app = {
     container.addEventListener('drop', async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      
-      console.log('Drop 事件触发', e.target);
-      
+
       if (!draggingGroupId) {
         console.error('没有拖拽中的分组ID');
         return;
@@ -1155,14 +1150,6 @@ const app = {
       // 计算新的插入位置
       const newDomIndex = insertBefore ? targetIndex : targetIndex + 1;
       
-      console.log('准备更新顺序:', {
-        draggingGroupId,
-        targetId,
-        insertBefore,
-        targetIndex,
-        newDomIndex
-      });
-      
       // 更新顺序（基于DOM顺序）
       await this.updateGroupOrderFromDOM(draggingGroupId, newDomIndex);
       
@@ -1199,7 +1186,6 @@ const app = {
     const items = container.querySelectorAll('.group-list-item');
     items.forEach(item => {
       item.addEventListener('dragstart', (e) => {
-        console.log('Drag start:', item.dataset.id);
         draggingGroupId = parseInt(item.dataset.id);
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/plain', item.dataset.id);
@@ -1207,7 +1193,6 @@ const app = {
       });
       
       item.addEventListener('dragend', (e) => {
-        console.log('Drag end');
         item.classList.remove('dragging');
         // 移除所有占位符
         document.querySelectorAll('.drag-placeholder').forEach(el => el.remove());
@@ -1244,14 +1229,6 @@ const app = {
       sort_order: index + 1
     }));
     
-    console.log('准备更新分组顺序:', {
-      draggedId,
-      draggedIndex,
-      newDomIndex,
-      actualNewIndex,
-      updates
-    });
-    
     try {
       // 批量更新数据库
       const responses = await Promise.all(
@@ -1269,12 +1246,10 @@ const app = {
           }
           
           const data = await res.json();
-          console.log(`分组 ${u.id} 更新成功:`, data);
           return data;
         })
       );
       
-      console.log('所有分组更新成功:', responses);
       
       // 更新本地数据的 sort_order
       updates.forEach(u => {
@@ -1312,7 +1287,6 @@ const app = {
     }
     
     if (draggedIndex === targetIndex) {
-      console.log('位置未改变，跳过更新');
       return;
     }
     
@@ -1341,16 +1315,6 @@ const app = {
       sort_order: index + 1
     }));
     
-    console.log('准备更新分组顺序:', {
-      draggedId,
-      targetId,
-      insertBefore,
-      draggedIndex,
-      targetIndex,
-      newIndex,
-      updates
-    });
-    
     try {
       // 批量更新数据库
       const responses = await Promise.all(
@@ -1368,12 +1332,10 @@ const app = {
           }
           
           const data = await res.json();
-          console.log(`分组 ${u.id} 更新成功:`, data);
           return data;
         })
       );
       
-      console.log('所有分组更新成功:', responses);
       
       // 更新本地数据的 sort_order
       updates.forEach(u => {
@@ -2311,12 +2273,7 @@ const app = {
           adminEmailInput.value = email;
           // 保存邮箱值到数据属性，以便后续使用
           adminEmailInput.setAttribute('data-loaded-email', email);
-          console.log('设置管理员邮箱:', email, '输入框值:', adminEmailInput.value);
-        } else {
-          console.warn('管理员邮箱输入框未找到');
         }
-      } else {
-        console.warn('管理员账户面板未找到');
       }
       
       // 加载邮件配置（无论当前显示哪个面板，都先加载数据）
@@ -2483,22 +2440,15 @@ const app = {
     try {
       // 只在设置面板中查找邮箱输入框，避免找到 setup 步骤中的输入框
       const adminSection = document.getElementById('settings-section-admin');
-      if (!adminSection) {
-        console.warn('管理员账户面板未找到');
-        return;
-      }
+      if (!adminSection) return;
       
       const adminEmailInput = adminSection.querySelector('#admin-email');
-      if (!adminEmailInput) {
-        console.warn('管理员邮箱输入框未找到');
-        return;
-      }
+      if (!adminEmailInput) return;
       
       // 先检查是否已有加载的数据
       const loadedEmail = adminEmailInput.getAttribute('data-loaded-email');
       if (loadedEmail !== null && loadedEmail !== undefined) {
         adminEmailInput.value = loadedEmail;
-        console.log('从缓存加载管理员邮箱:', loadedEmail, '输入框值:', adminEmailInput.value);
         return;
       }
       
@@ -2509,7 +2459,6 @@ const app = {
         const email = settings.adminEmail || '';
         adminEmailInput.value = email;
         adminEmailInput.setAttribute('data-loaded-email', email);
-        console.log('从API加载管理员邮箱:', email, '输入框值:', adminEmailInput.value);
       } else {
         console.error('加载管理员邮箱失败，响应状态:', response.status);
       }

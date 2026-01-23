@@ -755,6 +755,7 @@ async function checkHttp(target, timeoutSeconds, expectedStatus = 200, authUsern
       try {
         parsedUrl = new URL(url);
       } catch (err) {
+        log('ERROR', 'URL解析失败', { url, error: err.message, redirectCount });
         resolve({
           status: 'down',
           responseTime: null,
@@ -793,6 +794,10 @@ async function checkHttp(target, timeoutSeconds, expectedStatus = 200, authUsern
           // 构建重定向 URL
           let redirectUrl = res.headers.location;
           if (!redirectUrl.startsWith('http')) {
+            // 相对路径重定向：确保以 / 开头
+            if (!redirectUrl.startsWith('/')) {
+              redirectUrl = '/' + redirectUrl;
+            }
             redirectUrl = `${parsedUrl.protocol}//${parsedUrl.host}${redirectUrl}`;
           }
           // 递归跟随重定向
@@ -1238,6 +1243,17 @@ async function sendWebhookNotification(monitor, oldStatus, newStatus, message, r
 async function singleCheck(monitor) {
   const timeout = monitor.timeout_seconds || 10;
   const expectedStatus = monitor.expected_status || 200;
+  
+  // 调试：打印检测参数
+  log('DEBUG', '执行检测', { 
+    id: monitor.id, 
+    name: monitor.name, 
+    type: monitor.type, 
+    target: monitor.target,
+    targetType: typeof monitor.target,
+    timeout,
+    expectedStatus 
+  });
   
   switch (monitor.type) {
     case 'http':
