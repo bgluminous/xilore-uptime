@@ -9,6 +9,7 @@ build:
     - local
   only:
     - /^release-.*$/
+  retry: 2
   script:
     - PROJECT_NAME=$(awk -F'"' '/"name"/{print $4}' package.json)
     - VERSION=$(awk -F'"' '/"version"/{print $4}' package.json)
