@@ -25,7 +25,7 @@
     if (titleEl && titleEl.textContent !== title) {
       titleEl.textContent = title;
     }
-    document.title = title;
+    document.title = `${title} - Xilore Uptime`;
   }
   
   // 立即开始加载标题
@@ -67,7 +67,7 @@ const publicApp = {
       }
     }
     // 更新 document.title（这个更新不会造成视觉抖动）
-    document.title = title;
+    document.title = `${title} - Xilore Uptime`;
   },
   
   async loadTitle() {

@@ -2192,7 +2192,18 @@ app.post('/api/settings/test-webhook', authMiddleware, async (req, res) => {
             resolve();
           } else {
             log('WARN', '测试 Webhook 返回非成功状态码', { statusCode: res.statusCode, user: req.user?.username });
-            reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 100)}`));
+            // 根据状态码返回友好的错误信息
+            let errorMsg = `HTTP ${res.statusCode}`;
+            if (res.statusCode === 404) {
+              errorMsg = 'Webhook URL 不存在 (404)';
+            } else if (res.statusCode === 401) {
+              errorMsg = '认证失败，请检查请求头配置 (401)';
+            } else if (res.statusCode === 403) {
+              errorMsg = '访问被拒绝 (403)';
+            } else if (res.statusCode === 500) {
+              errorMsg = '目标服务器内部错误 (500)';
+            }
+            reject(new Error(errorMsg));
           }
         });
       });

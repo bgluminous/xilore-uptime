@@ -505,10 +505,24 @@ const app = {
   async init() {
     this.initIcons();
     this.bindEvents();
+    await this.loadPageTitle();
     await this.loadGroups();
     await this.loadMonitors();
     await this.loadStats();
     this.startAutoRefresh();
+  },
+  
+  async loadPageTitle() {
+    try {
+      const response = await fetch('/api/public/title');
+      if (response.ok) {
+        const data = await response.json();
+        const title = data.title || '服务状态监控';
+        document.title = `${title} - Xilore Uptime`;
+      }
+    } catch (error) {
+      // 静默失败，使用默认标题
+    }
   },
   
   bindEvents() {
@@ -520,11 +534,7 @@ const app = {
       }
     });
     
-    document.getElementById('monitor-modal').addEventListener('click', (e) => {
-      if (e.target.classList.contains('modal-overlay')) {
-        this.closeModal();
-      }
-    });
+    // 监控弹窗点击外部不关闭（避免误操作丢失数据）
     
     document.getElementById('group-modal').addEventListener('click', (e) => {
       if (e.target.classList.contains('modal-overlay')) {
@@ -2436,6 +2446,52 @@ const app = {
     }
   },
   
+  async testWebhook() {
+    const btn = document.getElementById('test-webhook-btn');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span>发送中...</span>';
+    
+    // 从页面获取 Webhook 配置
+    const webhookUrl = document.getElementById('webhook-url').value.trim();
+    const webhookMethod = document.getElementById('webhook-method').value;
+    const webhookHeaders = document.getElementById('webhook-headers').value.trim();
+    
+    // 验证必填项
+    if (!webhookUrl) {
+      this.showToast('请先填写 Webhook URL', 'error');
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+      return;
+    }
+    
+    try {
+      const response = await fetch('/api/settings/test-webhook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          webhookUrl,
+          webhookMethod,
+          webhookHeaders
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (response.ok) {
+        this.showToast(data.message || 'Webhook 测试成功', 'success');
+      } else {
+        this.showToast(data.error || 'Webhook 测试失败', 'error');
+      }
+    } catch (error) {
+      this.showToast('Webhook 测试失败: ' + error.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  },
+  
   async loadAdminEmail() {
     try {
       // 只在设置面板中查找邮箱输入框，避免找到 setup 步骤中的输入框
@@ -2582,8 +2638,11 @@ const app = {
       document.getElementById('webhook-method').value = settings.webhookMethod || 'POST';
       document.getElementById('webhook-headers').value = settings.webhookHeaders || '';
       
-      this.closeSettingsModal();
-      this.showToast('设置已保存', 'success');
+      // 保存成功后刷新页面以应用新设置
+      this.showToast('设置已保存，页面即将刷新...', 'success');
+      setTimeout(() => {
+        location.reload();
+      }, 1000);
     } catch (error) {
       this.showToast(error.message || '保存设置失败', 'error');
     }
@@ -2623,16 +2682,12 @@ const app = {
       }
       
       const result = await response.json();
-      this.showToast(`已成功删除 ${result.deletedRecords || 0} 条历史记录`, 'success');
+      this.showToast(`已成功删除 ${result.deletedRecords || 0} 条历史记录，页面即将刷新...`, 'success');
       
-      // 清空确认输入框
-      confirmInput.value = '';
-      btn.disabled = true;
-      
-      // 如果详情弹窗是打开的，刷新数据
-      if (this.currentDetailId) {
-        await this.loadDetailData(this.currentDetailId);
-      }
+      // 刷新页面以更新所有数据
+      setTimeout(() => {
+        location.reload();
+      }, 1000);
     } catch (error) {
       this.showToast(error.message || '删除所有历史记录失败', 'error');
     } finally {
