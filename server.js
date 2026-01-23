@@ -1515,7 +1515,6 @@ app.delete('/api/history/all', authMiddleware, async (req, res) => {
 });
 
 app.get('/api/monitors/:id/history', authMiddleware, async (req, res) => {
-  const limit = Math.min(Math.max(parseInt(req.query.limit) || 100, 1), 1000);
   const range = req.query.range || '24h'; // 1h, 24h, 7d, 30d
   
   // 计算时间范围
@@ -1528,15 +1527,7 @@ app.get('/api/monitors/:id/history', authMiddleware, async (req, res) => {
   }
   
   try {
-    // 注意：MySQL 的 LIMIT 和 INTERVAL 不能直接用参数化，需要拼接（已确保是安全的整数值）
-    const [rows] = await pool.execute(
-      `SELECT * FROM check_history 
-       WHERE monitor_id = ? AND checked_at >= DATE_SUB(NOW(), INTERVAL ${hours} HOUR)
-       ORDER BY checked_at DESC LIMIT ${limit}`,
-      [req.params.id]
-    );
-    
-    // 计算统计信息（warning也算作可用）
+    // 计算统计信息（warning也算作可用）- 使用所有数据，不受limit限制
     const [stats] = await pool.execute(
       `SELECT 
          COUNT(*) as total,
@@ -1549,8 +1540,125 @@ app.get('/api/monitors/:id/history', authMiddleware, async (req, res) => {
       [req.params.id]
     );
     
+    // 根据时间范围决定聚合间隔和图表数据点数量
+    let intervalMinutes = 1; // 聚合间隔（分钟）
+    let chartPoints = 60; // 图表数据点数量
+    let historyLimit = 100; // 历史记录表格显示数量（固定100条）
+    
+    switch (range) {
+      case '1h':
+        intervalMinutes = 1; // 1分钟一个点
+        chartPoints = 60;
+        break;
+      case '24h':
+        intervalMinutes = 30; // 30分钟一个点
+        chartPoints = 48;
+        break;
+      case '7d':
+        intervalMinutes = 180; // 3小时一个点
+        chartPoints = 56;
+        break;
+      case '30d':
+        intervalMinutes = 720; // 12小时一个点
+        chartPoints = 60;
+        break;
+    }
+    
+    // 一次性查询该时间范围内的所有历史记录
+    const [allHistoryRows] = await pool.execute(
+      `SELECT * FROM check_history 
+       WHERE monitor_id = ? AND checked_at >= DATE_SUB(NOW(), INTERVAL ${hours} HOUR)
+       ORDER BY checked_at ASC`,
+      [req.params.id]
+    );
+    
+    // 在内存中按时间段聚合数据
+    const now = new Date();
+    const chartData = [];
+    const intervalMs = intervalMinutes * 60 * 1000;
+    
+    // 从最早的时间开始，向前生成时间段
+    for (let i = chartPoints - 1; i >= 0; i--) {
+      const segmentEnd = new Date(now.getTime() - i * intervalMs);
+      const segmentStart = new Date(segmentEnd.getTime() - intervalMs);
+      
+      // 筛选该时间段内的记录
+      const segmentRecords = allHistoryRows.filter(record => {
+        const recordTime = new Date(record.checked_at);
+        return recordTime >= segmentStart && recordTime < segmentEnd;
+      });
+      
+      if (segmentRecords.length > 0) {
+        // 聚合该时间段的数据
+        let totalResponseTime = 0;
+        let responseTimeCount = 0;
+        let minResponseTime = null;
+        let maxResponseTime = null;
+        let downCount = 0;
+        let warningCount = 0;
+        let upCount = 0;
+        
+        segmentRecords.forEach(record => {
+          if (record.response_time !== null && record.response_time !== undefined) {
+            totalResponseTime += record.response_time;
+            responseTimeCount++;
+            if (minResponseTime === null || record.response_time < minResponseTime) {
+              minResponseTime = record.response_time;
+            }
+            if (maxResponseTime === null || record.response_time > maxResponseTime) {
+              maxResponseTime = record.response_time;
+            }
+          }
+          
+          if (record.status === 'down') {
+            downCount++;
+          } else if (record.status === 'warning') {
+            warningCount++;
+          } else if (record.status === 'up') {
+            upCount++;
+          }
+        });
+        
+        // 确定主要状态（优先 down > warning > up）
+        let mainStatus = null;
+        if (downCount > 0) {
+          mainStatus = 'down';
+        } else if (warningCount > 0) {
+          mainStatus = 'warning';
+        } else if (upCount > 0) {
+          mainStatus = 'up';
+        }
+        
+        chartData.push({
+          checked_at: segmentEnd.toISOString(),
+          response_time: responseTimeCount > 0 ? Math.round(totalResponseTime / responseTimeCount) : null,
+          status: mainStatus,
+          count: segmentRecords.length,
+          min_response_time: minResponseTime,
+          max_response_time: maxResponseTime
+        });
+      } else {
+        // 该时间段没有数据
+        chartData.push({
+          checked_at: segmentEnd.toISOString(),
+          response_time: null,
+          status: null,
+          count: 0
+        });
+      }
+    }
+    
+    // 获取历史记录表格数据（最近N条，按时间倒序）
+    const [historyRows] = await pool.execute(
+      `SELECT * FROM check_history 
+       WHERE monitor_id = ? AND checked_at >= DATE_SUB(NOW(), INTERVAL ${hours} HOUR)
+       ORDER BY checked_at DESC LIMIT ${historyLimit}`,
+      [req.params.id]
+    );
+    
     res.json({
-      history: rows,
+      chartData: chartData, // 已经是按时间正序排列（从旧到新，最新在右边）
+      history: historyRows,
       stats: {
         total: stats[0].total || 0,
         upCount: stats[0].up_count || 0,

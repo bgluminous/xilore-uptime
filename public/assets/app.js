@@ -1828,7 +1828,8 @@ const app = {
   
   async loadDetailData(id) {
     try {
-      const response = await fetch(`/api/monitors/${id}/history?range=${this.currentTimeRange}&limit=100`, {
+      // 后端会根据时间范围自动聚合数据，不需要传递 limit
+      const response = await fetch(`/api/monitors/${id}/history?range=${this.currentTimeRange}`, {
         credentials: 'same-origin'
       });
       
@@ -1844,10 +1845,11 @@ const app = {
         throw new Error(data.error || '请求失败');
       }
       
-      const history = data.history || [];
+      const chartData = data.chartData || []; // 后端聚合后的图表数据
+      const history = data.history || []; // 原始历史记录（用于表格）
       const stats = data.stats || { avgResponse: 0, minResponse: 0, maxResponse: 0, uptime: 0 };
       
-      this.renderDetailChart(history);
+      this.renderDetailChart(chartData);
       this.renderDetailStats(stats);
       this.renderDetailHistory(history);
       
@@ -1890,17 +1892,8 @@ const app = {
       return;
     }
     
-    // 根据时间范围决定数据点数量
-    let maxPoints = 60;
-    switch (this.currentTimeRange) {
-      case '1h': maxPoints = 30; break;
-      case '24h': maxPoints = 48; break;
-      case '7d': maxPoints = 84; break;
-      case '30d': maxPoints = 90; break;
-    }
-    
-    // 采样数据避免过多点
-    const data = this.sampleData(history.slice().reverse(), maxPoints);
+    // 后端已经聚合好数据，直接使用（按时间正序）
+    const data = history;
     
     // 获取主题相关的颜色
     const isDark = theme.current === 'dark';
@@ -1958,7 +1951,31 @@ const app = {
             padding: 10,
             displayColors: false,
             callbacks: {
-              label: (context) => context.parsed.y + ' ms'
+              label: (context) => {
+                const dataIndex = context.dataIndex;
+                const dataPoint = data[dataIndex];
+                const avgTime = context.parsed.y;
+                
+                if (!dataPoint || avgTime === null) {
+                  return '无数据';
+                }
+                
+                let label = `平均: ${avgTime} ms`;
+                
+                // 如果有最小和最大响应时间，显示它们
+                if (dataPoint.min_response_time !== null && dataPoint.min_response_time !== undefined &&
+                    dataPoint.max_response_time !== null && dataPoint.max_response_time !== undefined) {
+                  label += `\n最小: ${dataPoint.min_response_time} ms`;
+                  label += `\n最大: ${dataPoint.max_response_time} ms`;
+                }
+                
+                // 显示聚合数量（检测次数）
+                if (dataPoint.count !== null && dataPoint.count !== undefined) {
+                  label += `\n检测次数: ${dataPoint.count}`;
+                }
+                
+                return label;
+              }
             }
           }
         },
@@ -1987,8 +2004,8 @@ const app = {
   renderDetailHistory(history) {
     const tbody = document.getElementById('detail-history-body');
     
-    // 只显示最近的100条记录
-    tbody.innerHTML = history.slice(0, 100).map(h => `
+    // 显示所有返回的历史记录（不再限制100条）
+    tbody.innerHTML = history.map(h => `
       <tr>
         <td>${this.formatFullTime(h.checked_at)}</td>
         <td>${(() => {
@@ -2138,17 +2155,13 @@ const app = {
     if (!dateStr) return '';
     const date = new Date(dateStr);
     
-    switch (this.currentTimeRange) {
-      case '1h':
-        return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-      case '24h':
-        return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-      case '7d':
-      case '30d':
-        return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
-      default:
-        return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-    }
+    // 所有时间范围都显示日期和时分
+    return date.toLocaleString('zh-CN', { 
+      month: '2-digit', 
+      day: '2-digit', 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
   },
   
   formatFullTime(dateStr) {
