@@ -923,12 +923,17 @@ const app = {
 
   renderMonitorItem(m) {
     const statusBarHtml = this.renderStatusBar24h(m.statusBar24h);
+    const isPaused = m.enabled === 0 || m.enabled === false;
+    const pauseIcon = isPaused 
+      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>`
+      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+    const pauseTitle = isPaused ? '恢复检测' : '暂停检测';
     
     return `
-      <div class="monitor-item ${m.status}" data-id="${m.id}">
+      <div class="monitor-item ${m.status}${isPaused ? ' paused' : ''}" data-id="${m.id}">
         <div class="monitor-status"></div>
         <div class="monitor-info">
-          <div class="monitor-name">${this.escapeHtml(m.name)}</div>
+          <div class="monitor-name">${this.escapeHtml(m.name)}${isPaused ? '<span class="monitor-paused-badge">已暂停</span>' : ''}</div>
           <div class="monitor-meta">
             <span class="monitor-type">${m.type.toUpperCase()}</span>
             <span class="monitor-target">${this.escapeHtml(m.target)}${m.port ? ':' + m.port : ''}</span>
@@ -949,7 +954,10 @@ const app = {
           </div>
         </div>
         <div class="monitor-actions">
-          <button class="btn-icon" onclick="event.stopPropagation(); app.checkNow(${m.id})" title="立即检测">
+          <button class="btn-icon${isPaused ? ' paused' : ''}" onclick="event.stopPropagation(); app.toggleMonitor(${m.id})" title="${pauseTitle}">
+            ${pauseIcon}
+          </button>
+          <button class="btn-icon btn-icon-refresh" onclick="event.stopPropagation(); app.checkNow(${m.id})" title="立即检测">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M23 4v6h-6M1 20v-6h6"/>
               <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
@@ -1650,6 +1658,37 @@ const app = {
     }
   },
   
+  async toggleMonitor(id) {
+    try {
+      // 找到当前监控
+      const monitor = this.monitors.find(m => m.id === id);
+      if (!monitor) return;
+      
+      const newEnabled = monitor.enabled === 0 || monitor.enabled === false ? 1 : 0;
+      const action = newEnabled ? '恢复' : '暂停';
+      
+      const response = await fetch(`/api/monitors/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: newEnabled })
+      });
+      
+      if (response.status === 401) {
+        auth.showLogin();
+        return;
+      }
+      
+      if (!response.ok) {
+        throw new Error('操作失败');
+      }
+      
+      this.showToast(`监控已${action}`, 'success');
+      await this.loadMonitors();
+    } catch (error) {
+      this.showToast('操作失败', 'error');
+    }
+  },
+  
   async deleteMonitor(id) {
     if (!confirm('确定要删除这个监控吗？')) return;
     
@@ -1668,9 +1707,9 @@ const app = {
   },
   
   async checkNow(id, silent = false) {
-    // 查找主页的按钮
+    // 查找主页的按钮（刷新按钮是第二个 btn-icon）
     const item = document.querySelector(`.monitor-item[data-id="${id}"]`);
-    const btn = item?.querySelector('.btn-icon');
+    const btn = item?.querySelector('.btn-icon-refresh');
     
     // 查找详情弹窗的按钮
     const detailModal = document.getElementById('detail-modal');

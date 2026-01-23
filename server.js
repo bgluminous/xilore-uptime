@@ -1668,10 +1668,12 @@ app.put('/api/monitors/:id', authMiddleware, async (req, res) => {
   const validRetries = retries !== undefined ? Math.max(0, Math.min(3, retries)) : null;
   // 期望状态码
   const validExpectedStatus = expected_status !== undefined ? parseInt(expected_status) : null;
-  // group_id 可以为 null（未分组）
-  const validGroupId = (group_id === undefined || group_id === '' || group_id === 0 || group_id === null) 
-    ? null 
-    : (typeof group_id === 'string' ? parseInt(group_id) : group_id);
+  // group_id 可以为 null（未分组），但 undefined 表示不更新
+  const validGroupId = group_id === undefined 
+    ? undefined  // 不更新
+    : (group_id === '' || group_id === 0 || group_id === null) 
+      ? null  // 设为未分组
+      : (typeof group_id === 'string' ? parseInt(group_id) : group_id);
   // Basic Auth 字段（仅 HTTP 模式使用）
   const validAuthUsername = (type === 'http' && auth_username !== undefined) 
     ? (auth_username ? auth_username.trim() : null) 
@@ -1689,6 +1691,8 @@ app.put('/api/monitors/:id', authMiddleware, async (req, res) => {
     // 如果类型是 http 且 auth 字段未提供，保持原有值；如果提供了，使用新值
     const finalAuthUsername = validAuthUsername !== undefined ? validAuthUsername : existing[0].auth_username;
     const finalAuthPassword = validAuthPassword !== undefined ? validAuthPassword : existing[0].auth_password;
+    // 如果 group_id 未提供，保持原值
+    const finalGroupId = validGroupId !== undefined ? validGroupId : existing[0].group_id;
     
     // 确保所有参数都不是 undefined
     const params = [
@@ -1700,7 +1704,7 @@ app.put('/api/monitors/:id', authMiddleware, async (req, res) => {
       safeInt(timeout_seconds),
       validRetries,
       validExpectedStatus,
-      validGroupId,
+      finalGroupId,
       safeBool(enabled),
       is_public !== undefined ? (is_public ? 1 : 0) : null,
       email_notification !== undefined ? (email_notification ? 1 : 0) : null,
@@ -2824,8 +2828,9 @@ app.get('/api/public/groups', async (req, res) => {
 
 app.get('/api/public/monitors', async (req, res) => {
   try {
+    // 只返回公开展示需要的字段，不暴露 type、target、port 等敏感信息
     const [rows] = await pool.execute(
-      'SELECT * FROM monitors WHERE is_public = 1 ORDER BY group_id ASC, created_at DESC'
+      'SELECT id, name, status, group_id, is_public, enabled, last_response_time, last_check FROM monitors WHERE is_public = 1 ORDER BY group_id ASC, created_at DESC'
     );
     
     // 为每个监控计算24小时可用率

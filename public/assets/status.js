@@ -303,6 +303,7 @@ const publicApp = {
 
   renderMonitorItem(m) {
     const statusClass = m.status === 'up' ? 'up' : m.status === 'down' ? 'down' : 'unknown';
+    const isPaused = m.enabled === 0 || m.enabled === false;
     const uptimeText = m.uptime_24h !== null && m.uptime_24h !== undefined 
       ? m.uptime_24h.toFixed(2) + '%' 
       : '-';
@@ -310,10 +311,10 @@ const publicApp = {
     const statusBarHtml = this.renderStatusBar24h(m.statusBar24h);
     
     return `
-      <div class="monitor-item ${statusClass}" data-id="${m.id}">
+      <div class="monitor-item ${statusClass}${isPaused ? ' paused' : ''}" data-id="${m.id}">
         <div class="monitor-status"></div>
         <div class="monitor-info">
-          <div class="monitor-name">${this.escapeHtml(m.name)}</div>
+          <div class="monitor-name">${this.escapeHtml(m.name)}${isPaused ? '<span class="monitor-paused-badge">已暂停</span>' : ''}</div>
         </div>
         <div class="monitor-stats">
           <div class="monitor-stat">
