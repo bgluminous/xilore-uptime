@@ -314,10 +314,6 @@ const publicApp = {
         <div class="monitor-status"></div>
         <div class="monitor-info">
           <div class="monitor-name">${this.escapeHtml(m.name)}</div>
-          <div class="monitor-meta">
-            <span class="monitor-type">${m.type.toUpperCase()}</span>
-            <span class="monitor-target">${this.escapeHtml(m.target)}${m.port ? ':' + m.port : ''}</span>
-          </div>
         </div>
         <div class="monitor-stats">
           <div class="monitor-stat">
