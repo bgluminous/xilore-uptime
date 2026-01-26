@@ -1,8 +1,8 @@
 {
   "name": "xilore-uptime",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "简洁的网站监控工具 - 支持 HTTP、TCP 端口和 ICMP Ping 检测",
-  "main": "server.js",
+  "main": "server/server.js",
   "author": "Luminous",
   "license": "Luminous License",
   "keywords": [
@@ -15,8 +15,8 @@
     "monitoring"
   ],
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node server/server.js",
+    "dev": "node server/server.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -11,17 +11,48 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const nodemailer = require('nodemailer');
+const { connectDatabase, initializeTables } = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 // 如果设置了 CONFIG_PATH 环境变量则使用它，否则使用 data/config.json
-const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, 'data', 'config.json');
+const CONFIG_PATH = process.env.CONFIG_PATH || path.join(__dirname, '..', 'data', 'config.json');
 
 let pool = null;
 let config = null;
 // 定时器引用，用于在设置更新时重新调度
 let cleanupTimeout = null;
 let cleanupInterval = null;
+
+// ============ 模板渲染（邮件 HTML） ============
+const TEMPLATE_DIR = path.join(__dirname, 'templates');
+const templateCache = new Map();
+
+function escapeHtml(input) {
+  const str = input === null || input === undefined ? '' : String(input);
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function loadTemplate(filename) {
+  if (templateCache.has(filename)) return templateCache.get(filename);
+  const p = path.join(TEMPLATE_DIR, filename);
+  const tpl = fs.readFileSync(p, 'utf-8');
+  templateCache.set(filename, tpl);
+  return tpl;
+}
+
+function renderTemplate(filename, vars) {
+  const tpl = loadTemplate(filename);
+  return tpl.replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, (_, key) => {
+    const v = Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : '';
+    return v === null || v === undefined ? '' : String(v);
+  });
+}
 
 // ============ 日志工具 ============
 function log(level, message, data = null) {
@@ -120,7 +151,7 @@ async function isInitialized() {
   // 如果数据库连接池不存在，尝试连接
   if (!pool) {
     try {
-      await connectDatabase();
+      await connectDatabaseWrapper();
     } catch (e) {
       log('WARN', '数据库连接失败，系统未初始化', { error: e.message });
       return false;
@@ -138,278 +169,9 @@ async function isInitialized() {
   }
 }
 
-// ============ 数据库连接 ============
-async function connectDatabase() {
-  if (!config || !config.database) {
-    log('ERROR', '数据库配置不存在');
-    throw new Error('数据库配置不存在');
-  }
-  
-  pool = mysql.createPool({
-    host: config.database.host,
-    port: config.database.port || 3306,
-    user: config.database.user,
-    password: config.database.password,
-    database: config.database.name,
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
-  });
-  
-  const conn = await pool.getConnection();
-  conn.release();
-  log('INFO', '数据库连接成功', { host: config.database.host, database: config.database.name });
-}
-
-async function initializeTables() {
-  const createUsersTable = `
-    CREATE TABLE IF NOT EXISTS users (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      username VARCHAR(50) NOT NULL UNIQUE,
-      password VARCHAR(255) NOT NULL,
-      email VARCHAR(100),
-      role ENUM('admin', 'user') DEFAULT 'user',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `;
-  
-  const createGroupsTable = `
-    CREATE TABLE IF NOT EXISTS monitor_groups (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      name VARCHAR(100) NOT NULL,
-      description VARCHAR(255),
-      sort_order INT DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `;
-  
-  const createMonitorsTable = `
-    CREATE TABLE IF NOT EXISTS monitors (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      name VARCHAR(100) NOT NULL,
-      type ENUM('http', 'tcp', 'ping') NOT NULL,
-      target VARCHAR(255) NOT NULL,
-      port INT,
-      interval_seconds INT DEFAULT 60,
-      timeout_seconds INT DEFAULT 10,
-      retries INT DEFAULT 0,
-      expected_status INT DEFAULT 200,
-      group_id INT DEFAULT NULL,
-      status ENUM('up', 'down', 'unknown') DEFAULT 'unknown',
-      last_check TIMESTAMP NULL,
-      last_response_time INT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      enabled TINYINT(1) DEFAULT 1,
-      is_public TINYINT(1) DEFAULT 0
-    )
-  `;
-  
-  const createHistoryTable = `
-    CREATE TABLE IF NOT EXISTS check_history (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      monitor_id INT NOT NULL,
-      status ENUM('up', 'down', 'warning') NOT NULL,
-      response_time INT,
-      message VARCHAR(255),
-      checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_monitor (monitor_id),
-      INDEX idx_time (checked_at),
-      FOREIGN KEY (monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
-    )
-  `;
-  
-  // 如果表已存在，尝试添加warning状态（忽略错误，可能已经存在）
-  const alterHistoryTable = `
-    ALTER TABLE check_history 
-    MODIFY COLUMN status ENUM('up', 'down', 'warning') NOT NULL
-  `;
-  
-  const createSettingsTable = `
-    CREATE TABLE IF NOT EXISTS settings (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      key_name VARCHAR(100) NOT NULL UNIQUE,
-      value TEXT,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    )
-  `;
-  
-  await pool.execute(createUsersTable);
-  await pool.execute(createGroupsTable);
-  await pool.execute(createMonitorsTable);
-  await pool.execute(createHistoryTable);
-  await pool.execute(createSettingsTable);
-  
-  // 更新check_history表结构，添加warning状态
-  try {
-    await pool.execute(alterHistoryTable);
-    console.log('✓ check_history表结构已更新，添加warning状态');
-  } catch (e) {
-    // 如果修改失败（可能是状态已存在），忽略错误
-    if (e.message && !e.message.includes('Duplicate') && !e.message.includes("doesn't exist")) {
-      console.error('更新check_history表结构失败:', e.message);
-    }
-  }
-  
-  // 数据库迁移：如果旧表存在 timeout_ms 列，则迁移到 timeout_seconds
-  try {
-    const [columns] = await pool.execute(`SHOW COLUMNS FROM monitors LIKE 'timeout_ms'`);
-    if (columns.length > 0) {
-      await pool.execute(`ALTER TABLE monitors CHANGE timeout_ms timeout_seconds INT DEFAULT 10`);
-      await pool.execute(`UPDATE monitors SET timeout_seconds = CEIL(timeout_seconds / 1000)`);
-    }
-  } catch (e) {
-    // 忽略迁移错误
-  }
-  
-  // 添加 retries 列（如果不存在）
-  try {
-    const [columns] = await pool.execute(`SHOW COLUMNS FROM monitors LIKE 'retries'`);
-    if (columns.length === 0) {
-      await pool.execute(`ALTER TABLE monitors ADD COLUMN retries INT DEFAULT 0 AFTER timeout_seconds`);
-      console.log('✓ 已添加 retries 列');
-    }
-  } catch (e) {
-    // 忽略迁移错误
-  }
-  
-  // 添加 email_notification 列（如果不存在）
-  try {
-    const [columns] = await pool.execute(`SHOW COLUMNS FROM monitors LIKE 'email_notification'`);
-    if (columns.length === 0) {
-      await pool.execute(`ALTER TABLE monitors ADD COLUMN email_notification TINYINT(1) DEFAULT 0 AFTER is_public`);
-      console.log('✓ 已添加 email_notification 列');
-    }
-  } catch (e) {
-    console.error('添加 email_notification 列失败:', e.message);
-  }
-  
-  // 添加 webhook_notification 列（如果不存在）
-  try {
-    const [columns] = await pool.execute(`SHOW COLUMNS FROM monitors LIKE 'webhook_notification'`);
-    if (columns.length === 0) {
-      await pool.execute(`ALTER TABLE monitors ADD COLUMN webhook_notification TINYINT(1) DEFAULT 0 AFTER email_notification`);
-      console.log('✓ 已添加 webhook_notification 列');
-    }
-  } catch (e) {
-    console.error('添加 webhook_notification 列失败:', e.message);
-  }
-  
-  // 添加 expected_status 列（如果不存在）
-  try {
-    const [columns] = await pool.execute(`SHOW COLUMNS FROM monitors LIKE 'expected_status'`);
-    if (columns.length === 0) {
-      await pool.execute(`ALTER TABLE monitors ADD COLUMN expected_status INT DEFAULT 200 AFTER retries`);
-      console.log('✓ 已添加 expected_status 列');
-    }
-  } catch (e) {
-    console.error('添加 expected_status 列失败:', e.message);
-  }
-  
-  // 添加 group_id 列（如果不存在）
-  try {
-    const [columns] = await pool.execute(`SHOW COLUMNS FROM monitors LIKE 'group_id'`);
-    if (columns.length === 0) {
-      // 先检查 expected_status 列的位置
-      const [allColumns] = await pool.execute(`SHOW COLUMNS FROM monitors`);
-      let afterColumn = 'expected_status';
-      
-      // 如果 expected_status 不存在，检查 retries
-      const hasExpectedStatus = allColumns.some(col => col.Field === 'expected_status');
-      const hasRetries = allColumns.some(col => col.Field === 'retries');
-      
-      if (!hasExpectedStatus) {
-        if (hasRetries) {
-          afterColumn = 'retries';
-        } else {
-          afterColumn = 'timeout_seconds';
-        }
-      }
-      
-      // 使用参数化查询避免 SQL 注入，但 AFTER 子句不能参数化，所以需要验证列名
-      const validColumns = ['expected_status', 'retries', 'timeout_seconds'];
-      if (!validColumns.includes(afterColumn)) {
-        afterColumn = 'timeout_seconds';
-      }
-      
-      await pool.execute(`ALTER TABLE monitors ADD COLUMN group_id INT DEFAULT NULL AFTER ${afterColumn}`);
-      console.log(`✓ 已添加 group_id 列（位置：${afterColumn} 之后）`);
-    } else {
-      console.log('✓ group_id 列已存在');
-    }
-  } catch (e) {
-    console.error('添加 group_id 列失败:', e.message);
-    // 如果是因为列已存在而失败，这是正常的
-    if (e.message.includes('Duplicate column name')) {
-      console.log('  (列已存在，忽略此错误)');
-    }
-  }
-
-  // 添加 monitor_groups.sort_order 列（如果不存在）
-  try {
-    const [columns] = await pool.execute(`SHOW COLUMNS FROM monitor_groups LIKE 'sort_order'`);
-    if (columns.length === 0) {
-      await pool.execute(`ALTER TABLE monitor_groups ADD COLUMN sort_order INT DEFAULT 0 AFTER description`);
-      console.log('✓ 已添加 monitor_groups.sort_order 列');
-    } else {
-      console.log('✓ monitor_groups.sort_order 列已存在');
-    }
-  } catch (e) {
-    console.error('添加 monitor_groups.sort_order 列失败:', e.message);
-  }
-
-
-  // 添加 monitors.is_public 列（如果不存在）
-  try {
-    const [columns] = await pool.execute(`SHOW COLUMNS FROM monitors LIKE 'is_public'`);
-    if (columns.length === 0) {
-      await pool.execute(`ALTER TABLE monitors ADD COLUMN is_public TINYINT(1) DEFAULT 0 AFTER enabled`);
-      console.log('✓ 已添加 monitors.is_public 列');
-    } else {
-      console.log('✓ monitors.is_public 列已存在');
-    }
-  } catch (e) {
-    console.error('添加 monitors.is_public 列失败:', e.message);
-  }
-  
-  // 添加 auth_username 列（如果不存在）
-  try {
-    const [columns] = await pool.execute(`SHOW COLUMNS FROM monitors LIKE 'auth_username'`);
-    if (columns.length === 0) {
-      await pool.execute(`ALTER TABLE monitors ADD COLUMN auth_username VARCHAR(255) DEFAULT NULL AFTER is_public`);
-      console.log('✓ 已添加 auth_username 列');
-    } else {
-      console.log('✓ monitors.auth_username 列已存在');
-    }
-  } catch (e) {
-    console.error('添加 monitors.auth_username 列失败:', e.message);
-  }
-  
-  // 添加 auth_password 列（如果不存在）
-  try {
-    const [columns] = await pool.execute(`SHOW COLUMNS FROM monitors LIKE 'auth_password'`);
-    if (columns.length === 0) {
-      await pool.execute(`ALTER TABLE monitors ADD COLUMN auth_password VARCHAR(255) DEFAULT NULL AFTER auth_username`);
-      console.log('✓ 已添加 auth_password 列');
-    } else {
-      console.log('✓ monitors.auth_password 列已存在');
-    }
-  } catch (e) {
-    console.error('添加 monitors.auth_password 列失败:', e.message);
-  }
-  
-  // 验证 monitor_groups 表是否存在
-  try {
-    const [tables] = await pool.execute(`SHOW TABLES LIKE 'monitor_groups'`);
-    if (tables.length === 0) {
-      console.log('⚠ monitor_groups 表不存在，但应该已创建');
-    } else {
-      console.log('✓ monitor_groups 表已存在');
-    }
-  } catch (e) {
-    console.error('检查 monitor_groups 表失败:', e.message);
-  }
-  
-  console.log('数据表初始化完成');
+// ============ 数据库连接（已迁移到 database.js）============
+async function connectDatabaseWrapper() {
+  pool = await connectDatabase(config);
 }
 
 // ============ 初始化检查中间件 ============
@@ -624,10 +386,10 @@ app.post('/api/install/complete', async (req, res) => {
     });
     
     // 连接数据库
-    await connectDatabase();
+    await connectDatabaseWrapper();
     
     // 初始化表结构
-    await initializeTables();
+    await initializeTables(pool);
     
     // 如果需要创建管理员账户
     if (!skipAdmin && admin) {
@@ -994,118 +756,26 @@ async function sendEmailNotification(monitor, oldStatus, newStatus, message, res
     const typeText = monitor.type.toUpperCase();
     
     const subject = `${newStatus === 'up' ? '✅' : '❌'} 监控告警: ${monitor.name} ${statusText}`;
-    
-    const html = `
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>监控告警 - ${monitor.name}</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif; background-color: #f5f7fa; line-height: 1.6;">
-  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color: #f5f7fa; padding: 40px 20px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="600" style="max-width: 600px; background-color: #ffffff; border-radius: 6px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07); overflow: hidden;">
-          <!-- Header -->
-          <tr>
-            <td style="background: ${statusBgColor}; padding: 32px 40px; text-align: center;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 600; letter-spacing: -0.5px;">
-                监控状态变化
-              </h1>
-            </td>
-          </tr>
-          
-          <!-- Content -->
-          <tr>
-            <td style="padding: 40px;">
-              <!-- Status Icon -->
-              <div style="text-align: center; margin-bottom: 24px;">
-                <div style="display: inline-block; width: 64px; height: 64px; background-color: ${statusColor}; border-radius: 50%; line-height: 64px; font-size: 32px; color: #ffffff; font-weight: bold;">
-                  ${statusIcon}
-                </div>
-              </div>
-              
-              <!-- Main Message -->
-              <h2 style="margin: 0 0 8px 0; color: #1e293b; font-size: 20px; font-weight: 600; text-align: center;">
-                ${monitor.name}
-              </h2>
-              <p style="margin: 0 0 32px 0; color: ${statusColor}; font-size: 16px; font-weight: 600; text-align: center;">
-                ${statusText}
-              </p>
-              
-              <!-- Info Card -->
-              <div style="background-color: #f5f7fa; border-radius: 6px; padding: 24px; margin-bottom: 24px;">
-                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
-                  <tr>
-                    <td style="padding-bottom: 12px; border-bottom: 1px solid #e2e8f0;">
-                      <div style="display: flex; align-items: center; gap: 12px;">
-                        <div style="width: 4px; height: 20px; background-color: ${statusColor}; border-radius: 2px;"></div>
-                        <span style="color: #1e293b; font-size: 14px; font-weight: 600;">监控详情</span>
-                      </div>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td style="padding-top: 16px;">
-                      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
-                        <tr>
-                          <td style="padding: 8px 0; color: #64748b; font-size: 14px; width: 100px;">目标地址</td>
-                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${targetAddress}</td>
-                        </tr>
-                        <tr>
-                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">检测类型</td>
-                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${typeText}</td>
-                        </tr>
-                        <tr>
-                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">状态变化</td>
-                          <td style="padding: 8px 0;">
-                            <span style="color: #64748b; font-size: 14px;">${oldStatusText}</span>
-                            <span style="color: #94a3b8; margin: 0 8px;">→</span>
-                            <span style="color: ${statusColor}; font-size: 14px; font-weight: 600;">${newStatusText}</span>
-                          </td>
-                        </tr>
-                        <tr>
-                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">响应时间</td>
-                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${responseTime ? responseTime + 'ms' : '超时'}</td>
-                        </tr>
-                        <tr>
-                          <td style="padding: 8px 0; color: #64748b; font-size: 14px; vertical-align: top;">详细信息</td>
-                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${message || '无'}</td>
-                        </tr>
-                        <tr>
-                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">检测时间</td>
-                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${checkTime}</td>
-                        </tr>
-                      </table>
-                    </td>
-                  </tr>
-                </table>
-              </div>
-              
-              <!-- Footer Note -->
-              <p style="margin: 0; color: #94a3b8; font-size: 13px; text-align: center; line-height: 1.5;">
-                此邮件由 <strong style="color: #2563eb;">Xilore Uptime</strong> 自动发送<br>
-                当监控服务状态发生变化时，您将收到类似的通知邮件
-              </p>
-            </td>
-          </tr>
-          
-          <!-- Footer -->
-          <tr>
-            <td style="background-color: #f5f7fa; padding: 20px 40px; text-align: center; border-top: 1px solid #e2e8f0;">
-              <p style="margin: 0; color: #94a3b8; font-size: 12px;">
-                © ${new Date().getFullYear()} Xilore Uptime · 服务状态监控系统
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-    `;
+
+    const responseTimeText = (responseTime !== null && responseTime !== undefined)
+      ? `${responseTime}ms`
+      : '超时';
+
+    const html = renderTemplate('monitor-status-email.template', {
+      MONITOR_NAME: escapeHtml(monitor.name),
+      STATUS_BG_COLOR: statusBgColor,
+      STATUS_COLOR: statusColor,
+      STATUS_ICON: escapeHtml(statusIcon),
+      STATUS_TEXT: escapeHtml(statusText),
+      TARGET_ADDRESS: escapeHtml(targetAddress),
+      TYPE_TEXT: escapeHtml(typeText),
+      OLD_STATUS_TEXT: escapeHtml(oldStatusText),
+      NEW_STATUS_TEXT: escapeHtml(newStatusText),
+      RESPONSE_TIME_TEXT: escapeHtml(responseTimeText),
+      DETAIL_MESSAGE: escapeHtml(message || '无'),
+      CHECK_TIME: escapeHtml(checkTime),
+      YEAR: String(new Date().getFullYear())
+    });
     
     // 发送邮件
     await transporter.sendMail({
@@ -1346,8 +1016,12 @@ async function performCheck(monitor) {
 // ============ 分组 API ============
 app.get('/api/groups', authMiddleware, async (req, res) => {
   try {
-    const [rows] = await pool.execute('SELECT * FROM monitor_groups ORDER BY sort_order ASC, id ASC');
-    res.json(rows);
+    const [rows] = await pool.execute('SELECT id, name, sort_order FROM monitor_groups ORDER BY sort_order ASC, id ASC');
+    res.json(rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      sort_order: r.sort_order ?? 0
+    })));
   } catch (e) {
     log('ERROR', 'API 错误', { path: req.path, method: req.method, error: e.message, user: req.user?.username });
     res.status(500).json({ error: e.message });
@@ -1381,7 +1055,8 @@ app.post('/api/groups', authMiddleware, async (req, res) => {
       [name, description || null, nextOrder]
     );
     log('INFO', '创建分组成功', { groupId: result.insertId, name, user: req.user?.username });
-    res.json({ id: result.insertId, name, description, sort_order: nextOrder });
+    // 返回最小必要字段
+    res.json({ id: result.insertId, name, sort_order: nextOrder });
   } catch (e) {
     log('ERROR', '创建分组失败', { name, error: e.message, user: req.user?.username });
     res.status(500).json({ error: e.message });
@@ -1427,8 +1102,8 @@ app.put('/api/groups/:id', authMiddleware, async (req, res) => {
     
     if (updates.length === 0) {
       // 没有任何更新
-      const [group] = await pool.execute('SELECT * FROM monitor_groups WHERE id = ?', [id]);
-      return res.json(group[0]);
+      const [group] = await pool.execute('SELECT id, name, sort_order FROM monitor_groups WHERE id = ?', [id]);
+      return res.json(group[0] ? { id: group[0].id, name: group[0].name, sort_order: group[0].sort_order ?? 0 } : null);
     }
     
     values.push(id);
@@ -1438,10 +1113,10 @@ app.put('/api/groups/:id', authMiddleware, async (req, res) => {
     );
     
     // 返回更新后的分组信息
-    const [updated] = await pool.execute('SELECT * FROM monitor_groups WHERE id = ?', [id]);
+    const [updated] = await pool.execute('SELECT id, name, sort_order FROM monitor_groups WHERE id = ?', [id]);
     
     log('INFO', '更新分组成功', { groupId: id, name, sort_order, user: req.user?.username });
-    res.json(updated[0]);
+    res.json(updated[0] ? { id: updated[0].id, name: updated[0].name, sort_order: updated[0].sort_order ?? 0 } : null);
   } catch (e) {
     log('ERROR', '更新分组失败', { groupId: id, error: e.message, user: req.user?.username });
     res.status(500).json({ error: e.message });
@@ -1464,133 +1139,192 @@ app.delete('/api/groups/:id', authMiddleware, async (req, res) => {
 });
 
 // ============ 监控 API ============
-app.get('/api/monitors', authMiddleware, async (req, res) => {
-  try {
-    const [rows] = await pool.execute('SELECT * FROM monitors ORDER BY group_id ASC, created_at DESC');
-    
-    // 为每个监控添加最近24小时的状态条数据
-    const monitorsWithStatusBar = await Promise.all(rows.map(async (monitor) => {
-      // 将24小时分成24个时间段（每个60分钟）
-      const statusBar = [];
-      const now = new Date();
-      
-      for (let i = 23; i >= 0; i--) {
-        const startTime = new Date(now.getTime() - (i + 1) * 60 * 60 * 1000);
-        const endTime = new Date(now.getTime() - i * 60 * 60 * 1000);
-        
-        // 查询该时间段内的所有检测记录（按时间升序，用于前端细分时间段）
-        const [historyRows] = await pool.execute(
-          `SELECT status, checked_at, message FROM check_history 
-           WHERE monitor_id = ? AND checked_at >= ? AND checked_at < ?
-           ORDER BY checked_at ASC`,
-          [monitor.id, startTime, endTime]
-        );
-        
-        if (historyRows.length === 0) {
-          // 没有数据，显示灰色
-          statusBar.push({ 
-            status: null, 
-            startTime: startTime.toISOString(), 
-            endTime: endTime.toISOString(),
-            totalChecks: 0,
-            upChecks: 0,
-            downChecks: 0,
-            warningChecks: 0,
-            uptime: null
-          });
-        } else {
-          // 统计该时间段内的检测情况
-          let totalChecks = historyRows.length;
-          let upChecks = 0;
-          let downChecks = 0;
-          let warningChecks = 0;
-          let latestCheckTime = null;
-          let latestMessage = null;
-          
-          // 优先显示down，然后warning，最后up
-          let finalStatus = null;
-          
-          for (const row of historyRows) {
-            if (!latestCheckTime) {
-              latestCheckTime = row.checked_at;
-              latestMessage = row.message;
-            }
-            
-            // 统计各状态数量
-            if (row.status === 'up') {
-              upChecks++;
-              if (!finalStatus) {
-                finalStatus = 'up';
-              }
-            } else if (row.status === 'down') {
-              downChecks++;
-              finalStatus = 'down';
-              // 找到down状态时，使用该记录的message
-              latestCheckTime = row.checked_at;
-              latestMessage = row.message;
-            } else if (row.status === 'warning') {
-              warningChecks++;
-              if (finalStatus !== 'down') {
-                finalStatus = 'warning';
-                // 如果还没找到down，使用warning的message
-                if (!latestMessage || finalStatus === 'warning') {
-                  latestCheckTime = row.checked_at;
-                  latestMessage = row.message;
-                }
-              }
-            }
-          }
-          
-          // 计算可用率（warning也算作可用）
-          const uptime = totalChecks > 0 ? ((upChecks + warningChecks) / totalChecks) * 100 : null;
-          
-          // 将检测记录按时间排序，供前端细分时间段使用
-          const checkRecords = historyRows.map(row => ({
-            status: row.status,
-            checked_at: row.checked_at,
-            message: row.message
-          }));
-          
-          statusBar.push({ 
-            status: finalStatus || null, 
-            startTime: startTime.toISOString(), 
-            endTime: endTime.toISOString(), 
-            checkTime: latestCheckTime ? new Date(latestCheckTime).toISOString() : null,
-            message: latestMessage || null,
-            totalChecks,
-            upChecks,
-            downChecks,
-            warningChecks,
-            uptime,
-            checkRecords: checkRecords // 添加检测记录数组，供前端细分时间段
-          });
+function buildStatusBars24h(monitorIds, historyRows) {
+  const now = new Date();
+  const endMs = now.getTime();
+  const oneHourMs = 60 * 60 * 1000;
+  const segmentMs = 5 * 60 * 1000; // 12 个 5 分钟段
+  const start24hMs = endMs - 24 * oneHourMs;
+
+  const bucketsByMonitor = new Map();
+  for (const id of monitorIds) {
+    bucketsByMonitor.set(id, Array.from({ length: 24 }, () => []));
+  }
+
+  for (const row of historyRows) {
+    // 兼容 MySQL 返回 string 的情况，统一转 number 做 Map key
+    const monitorId = Number(row.monitor_id);
+    const buckets = bucketsByMonitor.get(monitorId);
+    if (!buckets) continue;
+
+    const checkedAt = row.checked_at instanceof Date ? row.checked_at : new Date(row.checked_at);
+    const t = checkedAt.getTime();
+    if (Number.isNaN(t) || t < start24hMs || t >= endMs) continue;
+
+    const hourIdx = Math.floor((t - start24hMs) / oneHourMs);
+    if (hourIdx < 0 || hourIdx >= 24) continue;
+    buckets[hourIdx].push(row);
+  }
+
+  const priority = { down: 3, warning: 2, up: 1 };
+
+  return monitorIds.map((id) => {
+    const buckets = bucketsByMonitor.get(id) || Array.from({ length: 24 }, () => []);
+    const statusBar24h = buckets.map((records, hourIdx) => {
+      const hourStartMs = start24hMs + hourIdx * oneHourMs;
+      const hourEndMs = hourStartMs + oneHourMs;
+
+      const segments = new Array(12).fill(null);
+      let upChecks = 0;
+      let downChecks = 0;
+      let warningChecks = 0;
+      let lastUp = null;
+      let lastWarning = null;
+      let lastDown = null;
+
+      for (const r of records) {
+        const checkedAt = r.checked_at instanceof Date ? r.checked_at : new Date(r.checked_at);
+        const t = checkedAt.getTime();
+        if (Number.isNaN(t) || t < hourStartMs || t >= hourEndMs) continue;
+
+        const segIdx = Math.min(11, Math.max(0, Math.floor((t - hourStartMs) / segmentMs)));
+        const current = segments[segIdx];
+        if (!current || priority[r.status] > priority[current]) {
+          segments[segIdx] = r.status;
+        }
+
+        if (r.status === "up") {
+          upChecks++;
+          lastUp = r;
+        } else if (r.status === "down") {
+          downChecks++;
+          lastDown = r;
+        } else if (r.status === "warning") {
+          warningChecks++;
+          lastWarning = r;
         }
       }
-      
-      // 计算24小时可用率（warning也算作可用）
+
+      // 向前填充空缺（使用最近一次状态），避免检测间隔大时出现灰块
+      let lastKnown = null;
+      for (let i = 0; i < segments.length; i++) {
+        if (segments[i]) {
+          lastKnown = segments[i];
+        } else if (lastKnown) {
+          segments[i] = lastKnown;
+        }
+      }
+
+      // 向后填充开头空缺（使用最早一次状态）
+      const firstKnownIndex = segments.findIndex((s) => s !== null);
+      if (firstKnownIndex > 0) {
+        for (let i = 0; i < firstKnownIndex; i++) {
+          segments[i] = segments[firstKnownIndex];
+        }
+      }
+
+      const totalChecks = records.length;
+      const uptime = totalChecks > 0 ? ((upChecks + warningChecks) / totalChecks) * 100 : null;
+      const status = downChecks > 0 ? "down" : warningChecks > 0 ? "warning" : upChecks > 0 ? "up" : null;
+
+      // tooltip 详情优先展示 down，其次 warning，再其次 up（取最后一次）
+      const chosen = lastDown || lastWarning || lastUp;
+      const chosenTime = chosen?.checked_at
+        ? (chosen.checked_at instanceof Date ? chosen.checked_at : new Date(chosen.checked_at))
+        : null;
+
+      return {
+        status,
+        startTime: new Date(hourStartMs).toISOString(),
+        endTime: new Date(hourEndMs).toISOString(),
+        checkTime: chosenTime ? chosenTime.toISOString() : null,
+        message: chosen?.message || null,
+        totalChecks,
+        downChecks,
+        warningChecks,
+        uptime,
+        segments,
+      };
+    });
+
+    return { monitorId: id, statusBar24h };
+  });
+}
+
+app.get('/api/monitors', authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT 
+        id, name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status,
+        group_id, status, last_check, last_response_time, enabled, is_public,
+        email_notification, webhook_notification, auth_username,
+        (auth_password IS NOT NULL AND auth_password <> '') AS auth_password_set
+      FROM monitors
+      ORDER BY group_id ASC, created_at DESC`
+    );
+    
+    // 只返回基础数据和可用率，不包含状态条（状态条通过 /api/monitors/statusbars 接口获取）
+    const ids = rows.map((m) => m.id);
+    const uptimeMap = new Map();
+    if (ids.length > 0) {
+      const inPlaceholders = ids.map(() => '?').join(',');
       const [uptimeRows] = await pool.execute(
         `SELECT 
+          monitor_id,
           COUNT(*) as total_checks,
           SUM(CASE WHEN status = 'up' OR status = 'warning' THEN 1 ELSE 0 END) as up_checks
         FROM check_history
-        WHERE monitor_id = ? 
-          AND checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)`,
-        [monitor.id]
+        WHERE checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+          AND monitor_id IN (${inPlaceholders})
+        GROUP BY monitor_id`,
+        ids
       );
-      
-      const uptimeData = uptimeRows[0] || { total_checks: 0, up_checks: 0 };
-      const uptime_24h = uptimeData.total_checks > 0 
-        ? (uptimeData.up_checks / uptimeData.total_checks) * 100 
-        : null;
-      
+      uptimeRows.forEach((r) => {
+        uptimeMap.set(r.monitor_id, {
+          total: Number(r.total_checks) || 0,
+          up: Number(r.up_checks) || 0,
+        });
+      });
+    }
+
+    const monitorsWithUptime = rows.map((monitor) => {
+      const u = uptimeMap.get(monitor.id) || { total: 0, up: 0 };
+      const uptime_24h = u.total > 0 ? (u.up / u.total) * 100 : null;
       return {
         ...monitor,
-        uptime_24h,
-        statusBar24h: statusBar
+        auth_password_set: monitor.auth_password_set === 1 || monitor.auth_password_set === true,
+        uptime_24h
       };
-    }));
+    });
     
-    res.json(monitorsWithStatusBar);
+    res.json(monitorsWithUptime);
+  } catch (e) {
+    log('ERROR', 'API 错误', { path: req.path, method: req.method, error: e.message, user: req.user?.username });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 批量获取监控状态条数据（用于异步加载）
+app.get('/api/monitors/statusbars', authMiddleware, async (req, res) => {
+  try {
+    const [rows] = await pool.execute("SELECT id FROM monitors");
+    const ids = rows.map((r) => Number(r.id)).filter((v) => Number.isFinite(v));
+    if (ids.length === 0) {
+      return res.json([]);
+    }
+
+    const inPlaceholders = ids.map(() => '?').join(',');
+    // 一次性取回所有监控最近24小时的记录，避免 24 * N 次查询
+    const [historyRows] = await pool.execute(
+      `SELECT monitor_id, status, checked_at, message
+       FROM check_history
+       WHERE checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+         AND monitor_id IN (${inPlaceholders})
+       ORDER BY monitor_id ASC, checked_at ASC`,
+      ids
+    );
+
+    res.json(buildStatusBars24h(ids, historyRows));
   } catch (e) {
     log('ERROR', 'API 错误', { path: req.path, method: req.method, error: e.message, user: req.user?.username });
     res.status(500).json({ error: e.message });
@@ -1599,11 +1333,23 @@ app.get('/api/monitors', authMiddleware, async (req, res) => {
 
 app.get('/api/monitors/:id', authMiddleware, async (req, res) => {
   try {
-    const [rows] = await pool.execute('SELECT * FROM monitors WHERE id = ?', [req.params.id]);
+    const [rows] = await pool.execute(
+      `SELECT 
+        id, name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status,
+        group_id, status, last_check, last_response_time, enabled, is_public,
+        email_notification, webhook_notification, auth_username,
+        (auth_password IS NOT NULL AND auth_password <> '') AS auth_password_set
+      FROM monitors
+      WHERE id = ?`,
+      [req.params.id]
+    );
     if (rows.length === 0) {
       return res.status(404).json({ error: '监控不存在' });
     }
-    res.json(rows[0]);
+    res.json({
+      ...rows[0],
+      auth_password_set: rows[0].auth_password_set === 1 || rows[0].auth_password_set === true
+    });
   } catch (e) {
     log('ERROR', 'API 错误', { path: req.path, method: req.method, error: e.message, user: req.user?.username });
     res.status(500).json({ error: e.message });
@@ -1631,12 +1377,23 @@ app.post('/api/monitors', authMiddleware, async (req, res) => {
   
   try {
     const [result] = await pool.execute(
-      'INSERT INTO monitors (name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status, group_id, is_public, email_notification, auth_username, auth_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [name, type, target, port || null, interval_seconds || 60, timeout_seconds || 10, validRetries, validExpectedStatus, group_id || null, is_public ? 1 : 0, email_notification ? 1 : 0, validAuthUsername, validAuthPassword]
+      'INSERT INTO monitors (name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status, group_id, enabled, is_public, email_notification, webhook_notification, auth_username, auth_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, type, target, port || null, interval_seconds || 60, timeout_seconds || 10, validRetries, validExpectedStatus, group_id || null, 1, is_public ? 1 : 0, email_notification ? 1 : 0, webhook_notification ? 1 : 0, validAuthUsername, validAuthPassword]
     );
     
-    const [rows] = await pool.execute('SELECT * FROM monitors WHERE id = ?', [result.insertId]);
-    startMonitorCheck(rows[0]);
+    const [rows] = await pool.execute(
+      `SELECT 
+        id, name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status,
+        group_id, status, last_check, last_response_time, enabled, is_public,
+        email_notification, webhook_notification, auth_username,
+        (auth_password IS NOT NULL AND auth_password <> '') AS auth_password_set
+      FROM monitors
+      WHERE id = ?`,
+      [result.insertId]
+    );
+    if (rows[0]) {
+      startMonitorCheck(rows[0]);
+    }
     
     log('INFO', '创建监控成功', { 
       monitorId: result.insertId, 
@@ -1647,7 +1404,10 @@ app.post('/api/monitors', authMiddleware, async (req, res) => {
       user: req.user?.username 
     });
     
-    res.status(201).json(rows[0]);
+    res.status(201).json(rows[0] ? {
+      ...rows[0],
+      auth_password_set: rows[0].auth_password_set === 1 || rows[0].auth_password_set === true
+    } : null);
   } catch (e) {
     log('ERROR', '创建监控失败', { name, type, target, error: e.message, user: req.user?.username });
     res.status(500).json({ error: e.message });
@@ -1674,23 +1434,36 @@ app.put('/api/monitors/:id', authMiddleware, async (req, res) => {
     : (group_id === '' || group_id === 0 || group_id === null) 
       ? null  // 设为未分组
       : (typeof group_id === 'string' ? parseInt(group_id) : group_id);
-  // Basic Auth 字段（仅 HTTP 模式使用）
-  const validAuthUsername = (type === 'http' && auth_username !== undefined) 
-    ? (auth_username ? auth_username.trim() : null) 
-    : (type !== 'http' ? null : undefined); // 如果类型不是 http，设为 null；如果类型是 http 但未提供，保持 undefined
-  const validAuthPassword = (type === 'http' && auth_password !== undefined) 
-    ? (auth_password ? auth_password : null) 
-    : (type !== 'http' ? null : undefined);
+  const hasAuthUsername = Object.prototype.hasOwnProperty.call(req.body, 'auth_username');
+  const hasAuthPassword = Object.prototype.hasOwnProperty.call(req.body, 'auth_password');
   
   try {
-    const [existing] = await pool.execute('SELECT * FROM monitors WHERE id = ?', [id]);
+    const [existing] = await pool.execute(
+      'SELECT id, type, group_id, auth_username, auth_password FROM monitors WHERE id = ?',
+      [id]
+    );
     if (existing.length === 0) {
       return res.status(404).json({ error: '监控不存在' });
     }
     
-    // 如果类型是 http 且 auth 字段未提供，保持原有值；如果提供了，使用新值
-    const finalAuthUsername = validAuthUsername !== undefined ? validAuthUsername : existing[0].auth_username;
-    const finalAuthPassword = validAuthPassword !== undefined ? validAuthPassword : existing[0].auth_password;
+    const effectiveType = (type !== undefined && type !== null) ? type : existing[0].type;
+
+    // Basic Auth 字段：只有在 HTTP 模式下才允许；并且只有在请求体明确包含字段时才更新
+    let finalAuthUsername = existing[0].auth_username;
+    let finalAuthPassword = existing[0].auth_password;
+
+    if (effectiveType !== 'http') {
+      finalAuthUsername = null;
+      finalAuthPassword = null;
+    } else {
+      if (hasAuthUsername) {
+        finalAuthUsername = auth_username ? String(auth_username).trim() : null;
+      }
+      if (hasAuthPassword) {
+        finalAuthPassword = auth_password ? String(auth_password) : null;
+      }
+    }
+
     // 如果 group_id 未提供，保持原值
     const finalGroupId = validGroupId !== undefined ? validGroupId : existing[0].group_id;
     
@@ -1708,6 +1481,7 @@ app.put('/api/monitors/:id', authMiddleware, async (req, res) => {
       safeBool(enabled),
       is_public !== undefined ? (is_public ? 1 : 0) : null,
       email_notification !== undefined ? (email_notification ? 1 : 0) : null,
+      webhook_notification !== undefined ? (webhook_notification ? 1 : 0) : null,
       finalAuthUsername,
       finalAuthPassword,
       id
@@ -1727,14 +1501,27 @@ app.put('/api/monitors/:id', authMiddleware, async (req, res) => {
         enabled = COALESCE(?, enabled),
         is_public = COALESCE(?, is_public),
         email_notification = COALESCE(?, email_notification),
+        webhook_notification = COALESCE(?, webhook_notification),
         auth_username = ?,
         auth_password = ?
         WHERE id = ?`,
       params
     );
     
-    const [rows] = await pool.execute('SELECT * FROM monitors WHERE id = ?', [id]);
-    startMonitorCheck(rows[0]);
+    const [rows] = await pool.execute(
+      `SELECT 
+        id, name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status,
+        group_id, status, last_check, last_response_time, enabled, is_public,
+        email_notification, webhook_notification, auth_username,
+        (auth_password IS NOT NULL AND auth_password <> '') AS auth_password_set
+      FROM monitors
+      WHERE id = ?`,
+      [id]
+    );
+    // 更新后重新启动或停止定时任务（根据 enabled 状态）
+    if (rows[0]) {
+      startMonitorCheck(rows[0]);
+    }
     
     log('INFO', '更新监控成功', { 
       monitorId: id, 
@@ -1744,7 +1531,10 @@ app.put('/api/monitors/:id', authMiddleware, async (req, res) => {
       user: req.user?.username 
     });
     
-    res.json(rows[0]);
+    res.json(rows[0] ? {
+      ...rows[0],
+      auth_password_set: rows[0].auth_password_set === 1 || rows[0].auth_password_set === true
+    } : null);
   } catch (e) {
     log('ERROR', '更新监控失败', { monitorId: id, error: e.message, user: req.user?.username });
     res.status(500).json({ error: e.message });
@@ -1763,6 +1553,8 @@ app.delete('/api/monitors/:id', authMiddleware, async (req, res) => {
       log('INFO', '停止监控任务', { monitorId: id });
     }
     
+    // 删除监控时，同时删除相关的历史记录
+    await pool.execute('DELETE FROM check_history WHERE monitor_id = ?', [id]);
     await pool.execute('DELETE FROM monitors WHERE id = ?', [id]);
     
     log('INFO', '删除监控成功', { 
@@ -1929,9 +1721,10 @@ app.get('/api/monitors/:id/history', authMiddleware, async (req, res) => {
         break;
     }
     
-    // 一次性查询该时间范围内的所有历史记录
+    // 一次性查询该时间范围内的所有历史记录（仅选择必要字段）
     const [allHistoryRows] = await pool.execute(
-      `SELECT * FROM check_history 
+      `SELECT status, response_time, checked_at
+       FROM check_history 
        WHERE monitor_id = ? AND checked_at >= DATE_SUB(NOW(), INTERVAL ${hours} HOUR)
        ORDER BY checked_at ASC`,
       [req.params.id]
@@ -2013,9 +1806,10 @@ app.get('/api/monitors/:id/history', authMiddleware, async (req, res) => {
       }
     }
     
-    // 获取历史记录表格数据（最近N条，按时间倒序）
+    // 获取历史记录表格数据（最近N条，按时间倒序，仅选择必要字段）
     const [historyRows] = await pool.execute(
-      `SELECT * FROM check_history 
+      `SELECT id, status, response_time, message, checked_at
+       FROM check_history 
        WHERE monitor_id = ? AND checked_at >= DATE_SUB(NOW(), INTERVAL ${hours} HOUR)
        ORDER BY checked_at DESC LIMIT ${historyLimit}`,
       [req.params.id]
@@ -2046,7 +1840,10 @@ app.get('/api/settings', authMiddleware, async (req, res) => {
       return res.json({ 
         publicPageTitle: '服务状态监控',
         logRetentionDays: 30,
-        adminEmail: null
+        adminEmail: null,
+        logTableSize: null,
+        smtpPassword: '',
+        smtpPasswordSet: false
       });
     }
     
@@ -2093,6 +1890,7 @@ app.get('/api/settings', authMiddleware, async (req, res) => {
       smtpRows.forEach(row => {
         smtpConfig[row.key_name] = row.value || '';
       });
+      const smtpPasswordSet = !!(smtpConfig.smtpPassword && String(smtpConfig.smtpPassword).trim());
       
       // 获取 Webhook 配置
       const [webhookRows] = await pool.execute(
@@ -2105,6 +1903,31 @@ app.get('/api/settings', authMiddleware, async (req, res) => {
         webhookConfig[row.key_name] = row.value || '';
       });
       
+      // 获取日志表大小
+      let logTableSize = null;
+      try {
+        // 获取表大小
+        const [sizeRows] = await pool.execute(
+          `SELECT 
+            ROUND(((data_length + index_length) / 1024 / 1024), 2) AS size_mb
+          FROM information_schema.tables 
+          WHERE table_schema = DATABASE() 
+            AND table_name = 'check_history'`
+        );
+        
+        // 获取实际记录数（更准确）
+        const [countRows] = await pool.execute('SELECT COUNT(*) as count FROM check_history');
+        
+        if (sizeRows.length > 0 && sizeRows[0].size_mb !== null) {
+          logTableSize = {
+            sizeMB: parseFloat(sizeRows[0].size_mb) || 0,
+            rows: parseInt(countRows[0].count) || 0
+          };
+        }
+      } catch (e) {
+        log('WARN', '获取日志表大小失败', { error: e.message });
+      }
+      
       res.json({ 
         publicPageTitle,
         logRetentionDays: isNaN(logRetentionDays) ? 30 : logRetentionDays,
@@ -2112,12 +1935,15 @@ app.get('/api/settings', authMiddleware, async (req, res) => {
         smtpHost: smtpConfig.smtpHost || '',
         smtpPort: smtpConfig.smtpPort || '587',
         smtpUser: smtpConfig.smtpUser || '',
-        smtpPassword: smtpConfig.smtpPassword || '',
+        // 不返回敏感密码，仅返回是否已设置
+        smtpPassword: '',
+        smtpPasswordSet,
         smtpFrom: smtpConfig.smtpFrom || '',
         smtpSecure: smtpConfig.smtpSecure === '1' || smtpConfig.smtpSecure === 'true',
         webhookUrl: webhookConfig.webhookUrl || '',
         webhookMethod: webhookConfig.webhookMethod || 'POST',
-        webhookHeaders: webhookConfig.webhookHeaders || ''
+        webhookHeaders: webhookConfig.webhookHeaders || '',
+        logTableSize
       });
     } catch (dbError) {
       // 如果表不存在或其他数据库错误，返回默认值
@@ -2125,7 +1951,10 @@ app.get('/api/settings', authMiddleware, async (req, res) => {
       res.json({ 
         publicPageTitle: '服务状态监控',
         logRetentionDays: 30,
-        adminEmail: null
+        adminEmail: null,
+        logTableSize: null,
+        smtpPassword: '',
+        smtpPasswordSet: false
       });
     }
   } catch (e) {
@@ -2133,7 +1962,10 @@ app.get('/api/settings', authMiddleware, async (req, res) => {
     res.json({ 
       publicPageTitle: '服务状态监控',
       logRetentionDays: 30,
-      adminEmail: null
+      adminEmail: null,
+      logTableSize: null,
+      smtpPassword: '',
+      smtpPasswordSet: false
     });
   }
 });
@@ -2263,109 +2095,20 @@ app.post('/api/settings/test-email', authMiddleware, async (req, res) => {
     
     // 发送测试邮件
     const sendTime = new Date().toLocaleString('zh-CN');
+    const secureText = secure ? 'SSL/TLS' : 'STARTTLS';
+    const testHtml = renderTemplate('test-email.template', {
+      SEND_TIME: escapeHtml(sendTime),
+      SMTP_HOST: escapeHtml(smtpHost),
+      SMTP_PORT: escapeHtml(String(port)),
+      SECURE_TEXT: escapeHtml(secureText),
+      SMTP_FROM: escapeHtml(smtpFrom),
+      YEAR: String(new Date().getFullYear())
+    });
     await transporter.sendMail({
       from: smtpFrom,
       to: toEmail,
       subject: '测试邮件 - Xilore Uptime',
-      html: `
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>测试邮件 - Xilore Uptime</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif; background-color: #f5f7fa; line-height: 1.6;">
-  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color: #f5f7fa; padding: 40px 20px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="600" style="max-width: 600px; background-color: #ffffff; border-radius: 6px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07); overflow: hidden;">
-          <!-- Header -->
-          <tr>
-            <td style="background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); padding: 32px 40px; text-align: center;">
-              <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 600; letter-spacing: -0.5px;">
-                测试邮件
-              </h1>
-            </td>
-          </tr>
-          
-          <!-- Content -->
-          <tr>
-            <td style="padding: 40px;">
-              <!-- Success Icon -->
-              <div style="text-align: center; margin-bottom: 24px;">
-                <div style="display: inline-block; width: 64px; height: 64px; background-color: #10b981; border-radius: 50%; line-height: 64px; font-size: 32px;">
-                  ✓
-                </div>
-              </div>
-              
-              <!-- Main Message -->
-              <h2 style="margin: 0 0 16px 0; color: #1e293b; font-size: 20px; font-weight: 600; text-align: center;">
-                邮件配置成功！
-              </h2>
-              <p style="margin: 0 0 32px 0; color: #64748b; font-size: 15px; text-align: center; line-height: 1.6;">
-                如果您收到这封邮件，说明您的邮件配置已成功，系统可以正常发送通知邮件。
-              </p>
-              
-              <!-- Info Card -->
-              <div style="background-color: #f5f7fa; border-radius: 6px; padding: 24px; margin-bottom: 24px;">
-                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
-                  <tr>
-                    <td style="padding-bottom: 12px; border-bottom: 1px solid #e2e8f0;">
-                      <div style="display: flex; align-items: center; gap: 12px;">
-                        <div style="width: 4px; height: 20px; background-color: #2563eb; border-radius: 2px;"></div>
-                        <span style="color: #1e293b; font-size: 14px; font-weight: 600;">配置信息</span>
-                      </div>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td style="padding-top: 16px;">
-                      <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
-                        <tr>
-                          <td style="padding: 8px 0; color: #64748b; font-size: 14px; width: 100px;">发送时间</td>
-                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${sendTime}</td>
-                        </tr>
-                        <tr>
-                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">SMTP 服务器</td>
-                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${smtpHost}:${port}</td>
-                        </tr>
-                        <tr>
-                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">安全连接</td>
-                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${secure ? 'SSL/TLS' : 'STARTTLS'}</td>
-                        </tr>
-                        <tr>
-                          <td style="padding: 8px 0; color: #64748b; font-size: 14px;">发件人</td>
-                          <td style="padding: 8px 0; color: #1e293b; font-size: 14px; font-weight: 500;">${smtpFrom}</td>
-                        </tr>
-                      </table>
-                    </td>
-                  </tr>
-                </table>
-              </div>
-              
-              <!-- Footer Note -->
-              <p style="margin: 0; color: #94a3b8; font-size: 13px; text-align: center; line-height: 1.5;">
-                此邮件由 <strong style="color: #2563eb;">Xilore Uptime</strong> 自动发送<br>
-                当监控服务状态发生变化时，您将收到类似的通知邮件
-              </p>
-            </td>
-          </tr>
-          
-          <!-- Footer -->
-          <tr>
-            <td style="background-color: #f5f7fa; padding: 20px 40px; text-align: center; border-top: 1px solid #e2e8f0;">
-              <p style="margin: 0; color: #94a3b8; font-size: 12px;">
-                © ${new Date().getFullYear()} Xilore Uptime · 服务状态监控系统
-              </p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-      `
+      html: testHtml
     });
     
     log('INFO', '测试邮件发送成功', { to: toEmail, user: req.user?.username });
@@ -2394,6 +2137,10 @@ app.put('/api/settings', authMiddleware, async (req, res) => {
          ON DUPLICATE KEY UPDATE value = ?, updated_at = CURRENT_TIMESTAMP`,
         ['publicPageTitle', value, value]
       );
+
+      // 刷新服务端标题缓存，确保保存后立刻生效
+      cachedPublicTitle = value;
+      cachedPublicTitleAt = Date.now();
       
       log('INFO', '更新设置成功', { publicPageTitle: value, user: req.user?.username });
     }
@@ -2546,6 +2293,7 @@ app.put('/api/settings', authMiddleware, async (req, res) => {
     updatedSmtpRows.forEach(row => {
       updatedSmtpConfig[row.key_name] = row.value || '';
     });
+    const smtpPasswordSet = !!(updatedSmtpConfig.smtpPassword && String(updatedSmtpConfig.smtpPassword).trim());
     
     // 获取更新后的 Webhook 配置
     const [updatedWebhookRows] = await pool.execute(
@@ -2565,7 +2313,9 @@ app.put('/api/settings', authMiddleware, async (req, res) => {
       smtpHost: updatedSmtpConfig.smtpHost || '',
       smtpPort: updatedSmtpConfig.smtpPort || '587',
       smtpUser: updatedSmtpConfig.smtpUser || '',
-      smtpPassword: updatedSmtpConfig.smtpPassword || '',
+      // 不返回敏感密码，仅返回是否已设置
+      smtpPassword: '',
+      smtpPasswordSet,
       smtpFrom: updatedSmtpConfig.smtpFrom || '',
       smtpSecure: updatedSmtpConfig.smtpSecure === '1' || updatedSmtpConfig.smtpSecure === 'true',
       webhookUrl: updatedWebhookConfig.webhookUrl || '',
@@ -2730,11 +2480,16 @@ app.post('/api/check-all', authMiddleware, async (req, res) => {
 const checkIntervals = new Map();
 
 function startMonitorCheck(monitor) {
+  // 先清除旧的定时任务（如果存在）
   if (checkIntervals.has(monitor.id)) {
     clearInterval(checkIntervals.get(monitor.id));
+    checkIntervals.delete(monitor.id);
   }
   
-  if (!monitor.enabled) return;
+  // 如果监控是暂停的，不启动定时任务
+  if (!monitor.enabled) {
+    return;
+  }
   
   const interval = setInterval(async () => {
     try {
@@ -2813,13 +2568,17 @@ app.get('/api/public/groups', async (req, res) => {
   try {
     // 获取所有分组，但只返回那些有公开服务的分组
     const [rows] = await pool.execute(
-      `SELECT DISTINCT g.* 
+      `SELECT DISTINCT g.id, g.name, g.sort_order
        FROM monitor_groups g
        INNER JOIN monitors m ON m.group_id = g.id
        WHERE m.is_public = 1
        ORDER BY g.sort_order ASC, g.id ASC`
     );
-    res.json(rows);
+    res.json(rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      sort_order: r.sort_order ?? 0
+    })));
   } catch (e) {
     log('ERROR', '公开API错误', { path: req.path, method: req.method, error: e.message });
     res.status(500).json({ error: e.message });
@@ -2830,134 +2589,65 @@ app.get('/api/public/monitors', async (req, res) => {
   try {
     // 只返回公开展示需要的字段，不暴露 type、target、port 等敏感信息
     const [rows] = await pool.execute(
-      'SELECT id, name, status, group_id, is_public, enabled, last_response_time, last_check FROM monitors WHERE is_public = 1 ORDER BY group_id ASC, created_at DESC'
+      'SELECT id, name, status, group_id, enabled, last_response_time, last_check FROM monitors WHERE is_public = 1 ORDER BY group_id ASC, created_at DESC'
     );
     
-    // 为每个监控计算24小时可用率
-    const monitorsWithUptime = await Promise.all(
-      rows.map(async (monitor) => {
-        const [uptimeRows] = await pool.execute(
-          `SELECT 
-            COUNT(*) as total_checks,
-            SUM(CASE WHEN status = 'up' OR status = 'warning' THEN 1 ELSE 0 END) as up_checks
-          FROM check_history
-          WHERE monitor_id = ? 
-            AND checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)`,
-          [monitor.id]
-        );
-        
-        const uptimeData = uptimeRows[0] || { total_checks: 0, up_checks: 0 };
-        const uptime_24h = uptimeData.total_checks > 0 
-          ? (uptimeData.up_checks / uptimeData.total_checks) * 100 
-          : null;
-        
-        // 将24小时分成24个时间段（每个60分钟）
-        const statusBar = [];
-        const now = new Date();
-        
-        for (let i = 23; i >= 0; i--) {
-          const startTime = new Date(now.getTime() - (i + 1) * 60 * 60 * 1000);
-          const endTime = new Date(now.getTime() - i * 60 * 60 * 1000);
-          
-          // 查询该时间段内的所有检测记录（按时间升序，用于前端细分时间段）
-          const [historyRows] = await pool.execute(
-            `SELECT status, checked_at, message FROM check_history 
-             WHERE monitor_id = ? AND checked_at >= ? AND checked_at < ?
-             ORDER BY checked_at ASC`,
-            [monitor.id, startTime, endTime]
-          );
-          
-          if (historyRows.length === 0) {
-            // 没有数据，显示灰色
-            statusBar.push({ 
-              status: null, 
-              startTime: startTime.toISOString(), 
-              endTime: endTime.toISOString(),
-              totalChecks: 0,
-              upChecks: 0,
-              downChecks: 0,
-              warningChecks: 0,
-              uptime: null,
-              checkRecords: []
-            });
-          } else {
-            // 统计该时间段内的检测情况
-            let totalChecks = historyRows.length;
-            let upChecks = 0;
-            let downChecks = 0;
-            let warningChecks = 0;
-            let latestCheckTime = null;
-            let latestMessage = null;
-            
-            // 优先显示down，然后warning，最后up
-            let finalStatus = null;
-            
-            for (const row of historyRows) {
-              if (!latestCheckTime) {
-                latestCheckTime = row.checked_at;
-                latestMessage = row.message;
-              }
-              
-              // 统计各状态数量
-              if (row.status === 'up') {
-                upChecks++;
-                if (!finalStatus) {
-                  finalStatus = 'up';
-                }
-              } else if (row.status === 'down') {
-                downChecks++;
-                finalStatus = 'down';
-                // 找到down状态时，使用该记录的message
-                latestCheckTime = row.checked_at;
-                latestMessage = row.message;
-              } else if (row.status === 'warning') {
-                warningChecks++;
-                if (finalStatus !== 'down') {
-                  finalStatus = 'warning';
-                  // 如果还没找到down，使用warning的message
-                  if (!latestMessage || finalStatus === 'warning') {
-                    latestCheckTime = row.checked_at;
-                    latestMessage = row.message;
-                  }
-                }
-              }
-            }
-            
-            // 计算可用率（warning也算作可用）
-            const uptime = totalChecks > 0 ? ((upChecks + warningChecks) / totalChecks) * 100 : null;
-            
-            // 将检测记录按时间排序，供前端细分时间段使用
-            const checkRecords = historyRows.map(row => ({
-              status: row.status,
-              checked_at: row.checked_at,
-              message: row.message
-            }));
-            
-            statusBar.push({ 
-              status: finalStatus || null, 
-              startTime: startTime.toISOString(), 
-              endTime: endTime.toISOString(), 
-              checkTime: latestCheckTime ? new Date(latestCheckTime).toISOString() : null,
-              message: latestMessage || null,
-              totalChecks,
-              upChecks,
-              downChecks,
-              warningChecks,
-              uptime,
-              checkRecords: checkRecords // 添加检测记录数组，供前端细分时间段
-            });
-          }
-        }
-        
-        return {
-          ...monitor,
-          uptime_24h,
-          statusBar24h: statusBar
-        };
-      })
-    );
+    const ids = rows.map((m) => m.id);
+    const uptimeMap = new Map();
+    if (ids.length > 0) {
+      const inPlaceholders = ids.map(() => '?').join(',');
+      const [uptimeRows] = await pool.execute(
+        `SELECT 
+          monitor_id,
+          COUNT(*) as total_checks,
+          SUM(CASE WHEN status = 'up' OR status = 'warning' THEN 1 ELSE 0 END) as up_checks
+        FROM check_history
+        WHERE checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+          AND monitor_id IN (${inPlaceholders})
+        GROUP BY monitor_id`,
+        ids
+      );
+      uptimeRows.forEach((r) => {
+        uptimeMap.set(r.monitor_id, {
+          total: Number(r.total_checks) || 0,
+          up: Number(r.up_checks) || 0,
+        });
+      });
+    }
+
+    const monitorsWithUptime = rows.map((monitor) => {
+      const u = uptimeMap.get(monitor.id) || { total: 0, up: 0 };
+      const uptime_24h = u.total > 0 ? (u.up / u.total) * 100 : null;
+      return { ...monitor, uptime_24h };
+    });
     
     res.json(monitorsWithUptime);
+  } catch (e) {
+    log('ERROR', '公开API错误', { path: req.path, method: req.method, error: e.message });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 批量获取监控状态条数据（用于异步加载）
+app.get('/api/public/monitors/statusbars', async (req, res) => {
+  try {
+    const [rows] = await pool.execute("SELECT id FROM monitors WHERE is_public = 1");
+    const ids = rows.map((r) => Number(r.id)).filter((v) => Number.isFinite(v));
+    if (ids.length === 0) {
+      return res.json([]);
+    }
+
+    const inPlaceholders = ids.map(() => '?').join(',');
+    const [historyRows] = await pool.execute(
+      `SELECT monitor_id, status, checked_at, message
+       FROM check_history
+       WHERE checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+         AND monitor_id IN (${inPlaceholders})
+       ORDER BY monitor_id ASC, checked_at ASC`,
+      ids
+    );
+
+    res.json(buildStatusBars24h(ids, historyRows));
   } catch (e) {
     log('ERROR', '公开API错误', { path: req.path, method: req.method, error: e.message });
     res.status(500).json({ error: e.message });
@@ -3028,27 +2718,104 @@ app.get('/setup', async (req, res) => {
     log('WARN', '检查初始化状态失败', { error: error.message });
   }
   
-  res.sendFile(path.join(__dirname, 'public', 'setup.html'));
+  res.sendFile(path.join(__dirname, '..', 'public', 'setup.html'));
 });
+
+async function getPublicPageTitle() {
+  if (!pool) return '服务状态监控';
+  try {
+    const [rows] = await pool.execute(
+      'SELECT value FROM settings WHERE key_name = ?',
+      ['publicPageTitle']
+    );
+    const t = rows.length > 0 && rows[0].value ? String(rows[0].value) : '';
+    return t.trim() || '服务状态监控';
+  } catch (e) {
+    return '服务状态监控';
+  }
+}
+
+// 简单缓存，避免每次请求都查库
+let cachedPublicTitle = null;
+let cachedPublicTitleAt = 0;
+async function getPublicPageTitleCached() {
+  const now = Date.now();
+  if (cachedPublicTitle && now - cachedPublicTitleAt < 30_000) {
+    return cachedPublicTitle;
+  }
+  const title = await getPublicPageTitle();
+  cachedPublicTitle = title;
+  cachedPublicTitleAt = now;
+  return title;
+}
+
+function injectTitleTag(html, titleText) {
+  const escapedDocTitle = escapeHtml(`${titleText} - Xilore Uptime`);
+  return html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapedDocTitle}</title>`);
+}
+
+function injectPublicTitleIntoStatusHtml(html, publicTitle) {
+  const escapedTitle = escapeHtml(publicTitle);
+  // 替换 <title>...</title>
+  html = injectTitleTag(html, publicTitle);
+
+  // 替换 <h1 id="public-title">...</h1>
+  html = html.replace(
+    /(<h1[^>]*id=["']public-title["'][^>]*>)[\s\S]*?(<\/h1>)/i,
+    `$1${escapedTitle}$2`
+  );
+
+  return html;
+}
 
 // 公开展示页面 - 根路径
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'status.html'));
+  (async () => {
+    const filePath = path.join(__dirname, '..', 'public', 'status.html');
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const title = await getPublicPageTitleCached();
+    const out = injectPublicTitleIntoStatusHtml(raw, title);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(out);
+  })().catch((e) => {
+    log('ERROR', '渲染首页失败', { error: e.message });
+    res.status(500).send('Internal Server Error');
+  });
 });
 
 // 管理页面
 app.get('/manage', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  (async () => {
+    const filePath = path.join(__dirname, '..', 'public', 'index.html');
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const title = await getPublicPageTitleCached();
+    const out = injectTitleTag(raw, title);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(out);
+  })().catch((e) => {
+    log('ERROR', '渲染管理页失败', { error: e.message });
+    res.status(500).send('Internal Server Error');
+  });
 });
 
 // ============ 静态文件服务 ============
-app.use(express.static(path.join(__dirname, 'public'), {
+app.use(express.static(path.join(__dirname, '..', 'public'), {
   index: false // 禁用默认的 index.html，因为我们已经手动处理了路由
 }));
 
 // 其他路由都返回管理页面（用于SPA路由，必须在静态文件服务之后）
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  (async () => {
+    const filePath = path.join(__dirname, '..', 'public', 'index.html');
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const title = await getPublicPageTitleCached();
+    const out = injectTitleTag(raw, title);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(out);
+  })().catch((e) => {
+    log('ERROR', '渲染管理页失败', { error: e.message, path: req.path });
+    res.status(500).send('Internal Server Error');
+  });
 });
 
 // ============ 启动服务器 ============
@@ -3057,8 +2824,8 @@ async function start() {
   
   if (isInstalled()) {
     try {
-      await connectDatabase();
-      await initializeTables();
+      await connectDatabaseWrapper();
+      await initializeTables(pool);
       initializeChecks();
       // 启动日志清理定时任务
       scheduleLogCleanup();

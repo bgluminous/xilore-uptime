@@ -1,37 +1,3 @@
-// ============ 立即加载标题（在页面渲染前就准备好）============
-(function() {
-  function loadTitleEarly() {
-    fetch('/api/public/title')
-      .then(res => res.ok ? res.json() : null)
-      .then(data => {
-        if (data && data.title) {
-          // 等待 DOM 加载完成后再更新
-          if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', function() {
-              updateTitle(data.title);
-            });
-          } else {
-            updateTitle(data.title);
-          }
-        }
-      })
-      .catch(() => {
-        // 静默失败，使用默认标题
-      });
-  }
-  
-  function updateTitle(title) {
-    const titleEl = document.getElementById('public-title');
-    if (titleEl && titleEl.textContent !== title) {
-      titleEl.textContent = title;
-    }
-    document.title = `${title} - Xilore Uptime`;
-  }
-  
-  // 立即开始加载标题
-  loadTitleEarly();
-})();
-
 // ============ 图标定义（与管理页保持一致）============
 const publicIcons = {
   responseTime: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>',
@@ -43,47 +9,28 @@ const publicIcons = {
 const publicApp = {
   monitors: [],
   groups: [],
+  // 记录每个监控的状态条签名，避免无变化重绘导致闪烁
+  statusBarSignatures: new Map(),
   
   async init() {
-    // 标题已经在页面头部提前加载，这里只加载数据
-    await this.loadData();
+    // 标题由服务端在 / 路由渲染注入，这里只加载数据
+    await this.loadBasicData();
     
     this.render();
+    
+    // 异步加载状态条数据（不阻塞首屏渲染）
+    this.loadStatusBars();
+    
     // 每30秒自动刷新
     setInterval(() => {
-      Promise.all([
-        this.loadTitle(),
-        this.loadData()
-      ]).then(() => this.render());
+      this.loadBasicData().then(() => {
+        this.render();
+        this.loadStatusBars();
+      });
     }, 30000);
   },
   
-  setTitle(title) {
-    const titleElement = document.getElementById('public-title');
-    if (titleElement) {
-      // 只有当标题不同时才更新，避免不必要的 DOM 操作导致抖动
-      if (titleElement.textContent !== title) {
-        titleElement.textContent = title;
-      }
-    }
-    // 更新 document.title（这个更新不会造成视觉抖动）
-    document.title = `${title} - Xilore Uptime`;
-  },
-  
-  async loadTitle() {
-    try {
-      const res = await fetch('/api/public/title');
-      if (res.ok) {
-        const data = await res.json();
-        const title = data.title || '服务状态监控';
-        this.setTitle(title);
-      }
-    } catch (error) {
-      console.error('加载标题失败:', error);
-    }
-  },
-  
-  async loadData() {
+  async loadBasicData() {
     try {
       const [groupsRes, monitorsRes, statsRes] = await Promise.all([
         fetch('/api/public/groups'),
@@ -96,7 +43,13 @@ const publicApp = {
       }
       
       if (monitorsRes.ok) {
-        this.monitors = await monitorsRes.json();
+        const nextMonitors = await monitorsRes.json();
+        // 保留已有的 statusBar24h，避免基础数据刷新时状态条先变骨架屏导致闪烁
+        const prevStatusBars = new Map(this.monitors.map(m => [String(m.id), m.statusBar24h]));
+        this.monitors = nextMonitors.map(m => ({
+          ...m,
+          statusBar24h: prevStatusBars.get(String(m.id)) || null
+        }));
       }
       
       if (statsRes.ok) {
@@ -114,7 +67,69 @@ const publicApp = {
         }
       }
     } catch (error) {
-      console.error('加载数据失败:', error);
+      console.error('加载基础数据失败:', error);
+    }
+  },
+  
+  computeStatusBarSignature(statusBar24h) {
+    if (!Array.isArray(statusBar24h)) return '';
+    let out = '';
+    for (const h of statusBar24h) {
+      out += (h?.status || '_') + ':';
+      const seg = Array.isArray(h?.segments) ? h.segments : null;
+      if (seg) {
+        for (let i = 0; i < seg.length; i++) {
+          const s = seg[i];
+          out += s ? s[0] : '_';
+        }
+      }
+      out += ';';
+    }
+    return out;
+  },
+
+  updateMonitorStatusBarDom(monitorId, statusBar24h) {
+    const item = document.querySelector(`.monitor-item[data-id="${monitorId}"]`);
+    if (!item) return;
+
+    const newHtml = statusBar24h && Array.isArray(statusBar24h) && statusBar24h.length > 0
+      ? this.renderStatusBar24h(statusBar24h)
+      : this.renderStatusBarSkeleton();
+
+    const existing = item.querySelector('.monitor-status-bar');
+    if (existing) {
+      existing.outerHTML = newHtml;
+    } else {
+      item.insertAdjacentHTML('beforeend', newHtml);
+    }
+  },
+
+  async loadStatusBars() {
+    try {
+      const statusBarsRes = await fetch('/api/public/monitors/statusbars');
+      if (statusBarsRes.ok) {
+        const statusBars = await statusBarsRes.json();
+        // 更新监控数据中的状态条信息
+        const statusBarMap = new Map(statusBars.map(sb => [String(sb.monitorId), sb.statusBar24h]));
+
+        // 只更新状态条（不整页重渲染），并且无变化不重绘，避免“闪一下”
+        this.monitors = this.monitors.map(m => {
+          const key = String(m.id);
+          if (!statusBarMap.has(key)) return m;
+
+          const sb = statusBarMap.get(key) || null;
+          const sig = this.computeStatusBarSignature(sb);
+          const prevSig = this.statusBarSignatures.get(key);
+          if (sig !== prevSig) {
+            this.statusBarSignatures.set(key, sig);
+            this.updateMonitorStatusBarDom(m.id, sb);
+          }
+
+          return { ...m, statusBar24h: sb };
+        });
+      }
+    } catch (error) {
+      console.error('加载状态条数据失败:', error);
     }
   },
   
@@ -141,29 +156,23 @@ const publicApp = {
     
     let html = '';
     
-    // 渲染分组（只显示有公开服务的分组）
+    // 渲染分组
     this.groups.forEach(group => {
-      const monitors = grouped[group.id] || [];
-      // 只显示有公开服务的分组
-      const publicMonitors = monitors
-        .filter(m => m.is_public === 1 || m.is_public === true)
-        .sort((a, b) => {
-          // 按名称排序：英文字母在中文前面
-          return sortByName(a.name || '', b.name || '');
-        });
-      if (publicMonitors.length > 0) {
-        html += this.renderGroupSection(group, publicMonitors);
+      const monitors = (grouped[group.id] || []).sort((a, b) => {
+        // 按名称排序：英文字母在中文前面
+        return sortByName(a.name || '', b.name || '');
+      });
+      if (monitors.length > 0) {
+        html += this.renderGroupSection(group, monitors);
       }
     });
     
     // 渲染未分组
     if (ungrouped.length > 0) {
-      const sortedUngrouped = ungrouped
-        .filter(m => m.is_public === 1 || m.is_public === true)
-        .sort((a, b) => {
-          // 按名称排序：英文字母在中文前面
-          return sortByName(a.name || '', b.name || '');
-        });
+      const sortedUngrouped = ungrouped.sort((a, b) => {
+        // 按名称排序：英文字母在中文前面
+        return sortByName(a.name || '', b.name || '');
+      });
       if (sortedUngrouped.length > 0) {
         html += this.renderGroupSection({ id: 0, name: '未分组' }, sortedUngrouped);
       }
@@ -237,39 +246,47 @@ const publicApp = {
       const startTime = new Date(item.startTime);
       const endTime = new Date(item.endTime);
       const segmentDuration = (endTime - startTime) / 12; // 每个小时间段的时间长度（5分钟）
-      const checkRecords = item.checkRecords || []; // 该时间段内的所有检测记录
       const tooltip = getTooltip(item).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
       
       const subItems = [];
-      const subStatuses = new Array(12).fill(null);
-      const priority = { down: 3, warning: 2, up: 1 };
+      let subStatuses = null;
 
-      // 将检测记录映射到对应小块（同一小块取优先级最高状态）
-      for (const record of checkRecords) {
-        const checkTime = new Date(record.checked_at);
-        if (checkTime < startTime || checkTime >= endTime) continue;
-        const idx = Math.min(11, Math.max(0, Math.floor((checkTime - startTime) / segmentDuration)));
-        const current = subStatuses[idx];
-        if (!current || priority[record.status] > priority[current]) {
-          subStatuses[idx] = record.status;
+      // 优先使用后端已聚合好的 segments（前端只负责渲染）
+      if (Array.isArray(item.segments) && item.segments.length === 12) {
+        subStatuses = item.segments.slice(0, 12);
+      } else {
+        // 兼容旧接口：使用 checkRecords 在前端聚合（保留以防回滚）
+        const checkRecords = item.checkRecords || []; // 该时间段内的所有检测记录
+        subStatuses = new Array(12).fill(null);
+        const priority = { down: 3, warning: 2, up: 1 };
+
+        // 将检测记录映射到对应小块（同一小块取优先级最高状态）
+        for (const record of checkRecords) {
+          const checkTime = new Date(record.checked_at);
+          if (checkTime < startTime || checkTime >= endTime) continue;
+          const idx = Math.min(11, Math.max(0, Math.floor((checkTime - startTime) / segmentDuration)));
+          const current = subStatuses[idx];
+          if (!current || priority[record.status] > priority[current]) {
+            subStatuses[idx] = record.status;
+          }
         }
-      }
 
-      // 向前填充空缺（使用最近一次状态），避免检测间隔大时出现灰块
-      let lastKnown = null;
-      for (let i = 0; i < subStatuses.length; i++) {
-        if (subStatuses[i]) {
-          lastKnown = subStatuses[i];
-        } else if (lastKnown) {
-          subStatuses[i] = lastKnown;
+        // 向前填充空缺（使用最近一次状态），避免检测间隔大时出现灰块
+        let lastKnown = null;
+        for (let i = 0; i < subStatuses.length; i++) {
+          if (subStatuses[i]) {
+            lastKnown = subStatuses[i];
+          } else if (lastKnown) {
+            subStatuses[i] = lastKnown;
+          }
         }
-      }
 
-      // 向后填充开头空缺（使用最早一次状态）
-      const firstKnownIndex = subStatuses.findIndex(status => status !== null);
-      if (firstKnownIndex > 0) {
-        for (let i = 0; i < firstKnownIndex; i++) {
-          subStatuses[i] = subStatuses[firstKnownIndex];
+        // 向后填充开头空缺（使用最早一次状态）
+        const firstKnownIndex = subStatuses.findIndex(status => status !== null);
+        if (firstKnownIndex > 0) {
+          for (let i = 0; i < firstKnownIndex; i++) {
+            subStatuses[i] = subStatuses[firstKnownIndex];
+          }
         }
       }
 
@@ -301,6 +318,11 @@ const publicApp = {
     return `<div class="monitor-status-bar ${useThinLine ? 'status-bar-thin' : ''}">${segments}</div>`;
   },
 
+  renderStatusBarSkeleton() {
+    // 显示一个整体的骨架屏条，不显示小格子
+    return `<div class="monitor-status-bar status-bar-skeleton-container"><div class="status-bar-skeleton-full"></div></div>`;
+  },
+
   renderMonitorItem(m) {
     const statusClass = m.status === 'up' ? 'up' : m.status === 'down' ? 'down' : 'unknown';
     const isPaused = m.enabled === 0 || m.enabled === false;
@@ -308,7 +330,10 @@ const publicApp = {
       ? m.uptime_24h.toFixed(2) + '%' 
       : '-';
     
-    const statusBarHtml = this.renderStatusBar24h(m.statusBar24h);
+    // 如果状态条数据未加载或为空数组，显示骨架屏
+    const statusBarHtml = m.statusBar24h && Array.isArray(m.statusBar24h) && m.statusBar24h.length > 0
+      ? this.renderStatusBar24h(m.statusBar24h)
+      : this.renderStatusBarSkeleton();
     
     return `
       <div class="monitor-item ${statusClass}${isPaused ? ' paused' : ''}" data-id="${m.id}">

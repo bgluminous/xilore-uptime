@@ -2,7 +2,7 @@
 
 一个简洁高效的网站监控工具，支持 HTTP、TCP 端口和 ICMP Ping 检测。
 
-![Xilore Uptime](https://img.shields.io/badge/version-1.3.0-blue)
+![Xilore Uptime](https://img.shields.io/badge/version-1.6.0-blue)
 ![Node.js](https://img.shields.io/badge/node-%3E%3D16.0.0-green)
 ![License](https://img.shields.io/badge/license-Luminous-orange)
 
@@ -34,10 +34,13 @@ services:
   uptimebot:
     image: bgluminous/xilore-uptime:latest
     container_name: uptimebot
+    ports:
+        - "3000:3000"
     environment:
         - PORT=3000
-        - CONFIG_PATH=./config.yml
         - JWT_SECRET=your-secret-key-here
+        # 可选：自定义配置文件路径（默认 /app/data/config.json）
+        # - CONFIG_PATH=/app/data/config.json
     volumes:
         - /etc/localtime:/etc/localtime:ro 
         - ./data:/app/data
@@ -51,6 +54,10 @@ services:
 npm install
 
 # 2. 启动服务
+# 开发/本地运行
+npm run dev
+
+# 或生产环境运行
 npm start
 
 # 3. 访问 http://localhost:3000
@@ -107,9 +114,15 @@ xilore-uptime/
 │   ├── index.html       # 管理页
 │   ├── setup.html       # 安装向导页
 │   └── status.html      # 公开展示页
+├── server/              # 服务端代码
+│   ├── server.js        # 主服务入口
+│   ├── database.js      # 数据库初始化/迁移
+│   └── templates/       # 邮件 HTML 模板
+│       ├── monitor-status-email.template
+│       └── test-email.template
 ├── Dockerfile           # Docker 镜像配置
 ├── package.json         # 项目依赖
-├── server.js            # 主服务文件
+├── data/                # 运行数据（默认：config.json）
 └── docs/DEPLOYMENT.md   # 详细部署文档
 ```
 
@@ -117,9 +130,9 @@ xilore-uptime/
 
 主要配置项：
 
-| 变量            | 说明     | 默认值                                 |
-|---------------|--------|-------------------------------------|
-| `PORT`        | 应用访问端口 | `3000`                              |
+| 变量            | 说明     | 默认值                                |
+|---------------|--------|------------------------------------|
+| `PORT`        | 应用访问端口 | `3000`                             |
 | `JWT_SECRET`  | JWT 密钥 | `change-this-secret-in-production` |
 | `CONFIG_PATH` | 配置文件路径 | `./data/config.json`               |
 
@@ -128,21 +141,23 @@ xilore-uptime/
 
 ### 主要接口
 
-| 方法     | 路径                          | 说明           |
-|--------|-----------------------------|--------------|
-| POST   | `/api/auth/login`           | 用户登录         |
-| POST   | `/api/auth/logout`          | 用户退出         |
-| GET    | `/api/auth/me`              | 当前用户信息       |
-| GET    | `/api/monitors`             | 获取所有监控       |
-| POST   | `/api/monitors`             | 创建监控         |
-| PUT    | `/api/monitors/:id`         | 更新监控         |
-| DELETE | `/api/monitors/:id`         | 删除监控         |
-| GET    | `/api/groups`               | 获取分组         |
-| POST   | `/api/groups`               | 创建分组         |
-| GET    | `/api/settings`             | 获取设置         |
-| PUT    | `/api/settings`             | 更新设置         |
-| GET    | `/api/public/monitors`      | 公开监控列表      |
-| GET    | `/api/public/stats`         | 公开统计数据      |
+| 方法     | 路径                                | 说明              |
+|--------|-----------------------------------|-----------------|
+| POST   | `/api/auth/login`                 | 用户登录            |
+| POST   | `/api/auth/logout`                | 用户退出            |
+| GET    | `/api/auth/me`                    | 当前用户信息          |
+| GET    | `/api/monitors`                   | 获取所有监控（基础数据）    |
+| GET    | `/api/monitors/statusbars`        | 获取监控状态条（24h 聚合） |
+| POST   | `/api/monitors`                   | 创建监控            |
+| PUT    | `/api/monitors/:id`               | 更新监控            |
+| DELETE | `/api/monitors/:id`               | 删除监控            |
+| GET    | `/api/groups`                     | 获取分组            |
+| POST   | `/api/groups`                     | 创建分组            |
+| GET    | `/api/settings`                   | 获取设置            |
+| PUT    | `/api/settings`                   | 更新设置            |
+| GET    | `/api/public/monitors`            | 公开监控列表（基础数据）    |
+| GET    | `/api/public/monitors/statusbars` | 公开监控状态条（24h 聚合） |
+| GET    | `/api/public/stats`               | 公开统计数据          |
 
 完整 API 文档请查看源码注释。
 

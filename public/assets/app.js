@@ -455,6 +455,8 @@ const app = {
   refreshInterval: null,
   historyChart: null,
   detailChart: null,
+  // 记录每个监控的状态条签名，避免无变化重绘导致闪烁
+  statusBarSignatures: new Map(),
   
   initIcons() {
     // 统计卡片图标
@@ -505,24 +507,12 @@ const app = {
   async init() {
     this.initIcons();
     this.bindEvents();
-    await this.loadPageTitle();
     await this.loadGroups();
     await this.loadMonitors();
     await this.loadStats();
+    // 异步加载状态条数据（不阻塞首屏渲染）
+    this.loadStatusBars();
     this.startAutoRefresh();
-  },
-  
-  async loadPageTitle() {
-    try {
-      const response = await fetch('/api/public/title');
-      if (response.ok) {
-        const data = await response.json();
-        const title = data.title || '服务状态监控';
-        document.title = `${title} - Xilore Uptime`;
-      }
-    } catch (error) {
-      // 静默失败，使用默认标题
-    }
   },
   
   bindEvents() {
@@ -661,7 +651,13 @@ const app = {
         throw new Error(errorData.error || '加载失败');
       }
       const data = await response.json();
-      this.monitors = data;
+
+      // 保留已有的 statusBar24h，避免基础数据刷新时状态条先变骨架屏导致闪烁
+      const prevStatusBars = new Map(this.monitors.map(m => [String(m.id), m.statusBar24h]));
+      this.monitors = data.map(m => ({
+        ...m,
+        statusBar24h: prevStatusBars.get(String(m.id)) || null
+      }));
       this.renderList();
       
       // 如果详情弹窗是打开的，更新详情弹窗的基础信息
@@ -671,6 +667,72 @@ const app = {
     } catch (error) {
       console.error('加载监控列表失败:', error);
       this.showToast('加载监控列表失败: ' + (error.message || '未知错误'), 'error');
+    }
+  },
+  
+  computeStatusBarSignature(statusBar24h) {
+    if (!Array.isArray(statusBar24h)) return '';
+    let out = '';
+    for (const h of statusBar24h) {
+      out += (h?.status || '_') + ':';
+      const seg = Array.isArray(h?.segments) ? h.segments : null;
+      if (seg) {
+        for (let i = 0; i < seg.length; i++) {
+          const s = seg[i];
+          out += s ? s[0] : '_'; // up/down/warning -> u/d/w
+        }
+      }
+      out += ';';
+    }
+    return out;
+  },
+
+  updateMonitorStatusBarDom(monitorId, statusBar24h) {
+    const item = document.querySelector(`.monitor-item[data-id="${monitorId}"]`);
+    if (!item) return;
+
+    const newHtml = statusBar24h && Array.isArray(statusBar24h) && statusBar24h.length > 0
+      ? this.renderStatusBar24h(statusBar24h)
+      : this.renderStatusBarSkeleton();
+
+    const existing = item.querySelector('.monitor-status-bar');
+    if (existing) {
+      existing.outerHTML = newHtml;
+    } else {
+      item.insertAdjacentHTML('beforeend', newHtml);
+    }
+  },
+
+  async loadStatusBars() {
+    try {
+      const statusBarsRes = await fetch('/api/monitors/statusbars', { credentials: 'same-origin' });
+      if (statusBarsRes.status === 401) {
+        auth.showLogin();
+        return;
+      }
+      if (statusBarsRes.ok) {
+        const statusBars = await statusBarsRes.json();
+        // 更新监控数据中的状态条信息
+        const statusBarMap = new Map(statusBars.map(sb => [String(sb.monitorId), sb.statusBar24h]));
+
+        // 只更新状态条（不整页重渲染），并且无变化不重绘，避免“闪一下”
+        this.monitors = this.monitors.map(m => {
+          const key = String(m.id);
+          if (!statusBarMap.has(key)) return m;
+
+          const sb = statusBarMap.get(key) || null;
+          const sig = this.computeStatusBarSignature(sb);
+          const prevSig = this.statusBarSignatures.get(key);
+          if (sig !== prevSig) {
+            this.statusBarSignatures.set(key, sig);
+            this.updateMonitorStatusBarDom(m.id, sb);
+          }
+
+          return { ...m, statusBar24h: sb };
+        });
+      }
+    } catch (error) {
+      console.error('加载状态条数据失败:', error);
     }
   },
   
@@ -857,39 +919,47 @@ const app = {
       const startTime = new Date(item.startTime);
       const endTime = new Date(item.endTime);
       const segmentDuration = (endTime - startTime) / 12; // 每个小时间段的时间长度（5分钟）
-      const checkRecords = item.checkRecords || []; // 该时间段内的所有检测记录
       const tooltip = getTooltip(item).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
       
       const subItems = [];
-      const subStatuses = new Array(12).fill(null);
-      const priority = { down: 3, warning: 2, up: 1 };
+      let subStatuses = null;
 
-      // 将检测记录映射到对应小块（同一小块取优先级最高状态）
-      for (const record of checkRecords) {
-        const checkTime = new Date(record.checked_at);
-        if (checkTime < startTime || checkTime >= endTime) continue;
-        const idx = Math.min(11, Math.max(0, Math.floor((checkTime - startTime) / segmentDuration)));
-        const current = subStatuses[idx];
-        if (!current || priority[record.status] > priority[current]) {
-          subStatuses[idx] = record.status;
+      // 优先使用后端已聚合好的 segments（前端只负责渲染）
+      if (Array.isArray(item.segments) && item.segments.length === 12) {
+        subStatuses = item.segments.slice(0, 12);
+      } else {
+        // 兼容旧接口：使用 checkRecords 在前端聚合（保留以防回滚）
+        const checkRecords = item.checkRecords || []; // 该时间段内的所有检测记录
+        subStatuses = new Array(12).fill(null);
+        const priority = { down: 3, warning: 2, up: 1 };
+
+        // 将检测记录映射到对应小块（同一小块取优先级最高状态）
+        for (const record of checkRecords) {
+          const checkTime = new Date(record.checked_at);
+          if (checkTime < startTime || checkTime >= endTime) continue;
+          const idx = Math.min(11, Math.max(0, Math.floor((checkTime - startTime) / segmentDuration)));
+          const current = subStatuses[idx];
+          if (!current || priority[record.status] > priority[current]) {
+            subStatuses[idx] = record.status;
+          }
         }
-      }
 
-      // 向前填充空缺（使用最近一次状态），避免检测间隔大时出现灰块
-      let lastKnown = null;
-      for (let i = 0; i < subStatuses.length; i++) {
-        if (subStatuses[i]) {
-          lastKnown = subStatuses[i];
-        } else if (lastKnown) {
-          subStatuses[i] = lastKnown;
+        // 向前填充空缺（使用最近一次状态），避免检测间隔大时出现灰块
+        let lastKnown = null;
+        for (let i = 0; i < subStatuses.length; i++) {
+          if (subStatuses[i]) {
+            lastKnown = subStatuses[i];
+          } else if (lastKnown) {
+            subStatuses[i] = lastKnown;
+          }
         }
-      }
 
-      // 向后填充开头空缺（使用最早一次状态）
-      const firstKnownIndex = subStatuses.findIndex(status => status !== null);
-      if (firstKnownIndex > 0) {
-        for (let i = 0; i < firstKnownIndex; i++) {
-          subStatuses[i] = subStatuses[firstKnownIndex];
+        // 向后填充开头空缺（使用最早一次状态）
+        const firstKnownIndex = subStatuses.findIndex(status => status !== null);
+        if (firstKnownIndex > 0) {
+          for (let i = 0; i < firstKnownIndex; i++) {
+            subStatuses[i] = subStatuses[firstKnownIndex];
+          }
         }
       }
 
@@ -920,9 +990,17 @@ const app = {
 
     return `<div class="monitor-status-bar ${useThinLine ? 'status-bar-thin' : ''}">${segments}</div>`;
   },
+  
+  renderStatusBarSkeleton() {
+    // 显示一个整体的骨架屏条，不显示小格子
+    return `<div class="monitor-status-bar status-bar-skeleton-container"><div class="status-bar-skeleton-full"></div></div>`;
+  },
 
   renderMonitorItem(m) {
-    const statusBarHtml = this.renderStatusBar24h(m.statusBar24h);
+    // 如果状态条数据未加载或为空数组，显示骨架屏
+    const statusBarHtml = m.statusBar24h && Array.isArray(m.statusBar24h) && m.statusBar24h.length > 0
+      ? this.renderStatusBar24h(m.statusBar24h)
+      : this.renderStatusBarSkeleton();
     const isPaused = m.enabled === 0 || m.enabled === false;
     const pauseIcon = isPaused 
       ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>`
@@ -1551,7 +1629,13 @@ const app = {
     document.getElementById('monitor-email-notification').checked = monitor.email_notification === 1 || monitor.email_notification === true;
     document.getElementById('monitor-webhook-notification').checked = monitor.webhook_notification === 1 || monitor.webhook_notification === true;
     document.getElementById('monitor-auth-username').value = monitor.auth_username || '';
-    document.getElementById('monitor-auth-password').value = monitor.auth_password || '';
+    const pwdInput = document.getElementById('monitor-auth-password');
+    if (pwdInput) {
+      // 不回填敏感密码
+      pwdInput.value = '';
+      const hasPwd = monitor.auth_password_set === true || monitor.auth_password_set === 1;
+      pwdInput.placeholder = hasPwd ? '已设置（留空不修改）' : '（可选）';
+    }
     
     this.togglePortField();
     document.getElementById('monitor-modal').classList.add('active');
@@ -1607,8 +1691,16 @@ const app = {
       email_notification: document.getElementById('monitor-email-notification').checked,
       webhook_notification: document.getElementById('monitor-webhook-notification').checked,
       auth_username: type === 'http' ? document.getElementById('monitor-auth-username').value.trim() || null : null,
-      auth_password: type === 'http' ? document.getElementById('monitor-auth-password').value || null : null
+      auth_password: type === 'http' ? (document.getElementById('monitor-auth-password').value || null) : null
     };
+
+    // 编辑模式下：密码留空代表“不修改”，不要发送 auth_password 字段（避免覆盖为 null）
+    if (this.editingId && type === 'http') {
+      const pwdVal = document.getElementById('monitor-auth-password').value;
+      if (!pwdVal) {
+        delete data.auth_password;
+      }
+    }
     
     try {
       const isEdit = !!this.editingId;
@@ -1640,6 +1732,8 @@ const app = {
       // 重新加载列表和统计
       await this.loadMonitors();
       await this.loadStats();
+      // 异步加载状态条数据
+      this.loadStatusBars();
       
       // 如果详情弹窗是打开的，刷新详情数据
       if (this.currentDetailId === monitorId) {
@@ -1647,10 +1741,15 @@ const app = {
       }
       
       // 立即执行一次检测（静默模式，不显示额外的提示）
+      // 注意：如果该监控处于暂停状态（enabled=0），不要自动触发检测
       if (monitorId) {
         // 延迟一下，确保列表已更新
         setTimeout(async () => {
-          await this.checkNow(monitorId, true);
+          const m = this.monitors.find(x => x.id === monitorId);
+          const enabled = m ? (m.enabled === 1 || m.enabled === true) : (savedMonitor?.enabled === 1 || savedMonitor?.enabled === true);
+          if (enabled) {
+            await this.checkNow(monitorId, true);
+          }
         }, 300);
       }
     } catch (error) {
@@ -1684,6 +1783,8 @@ const app = {
       
       this.showToast(`监控已${action}`, 'success');
       await this.loadMonitors();
+      // 异步加载状态条数据
+      this.loadStatusBars();
     } catch (error) {
       this.showToast('操作失败', 'error');
     }
@@ -1701,6 +1802,8 @@ const app = {
       this.showToast('监控已删除', 'success');
       await this.loadMonitors();
       await this.loadStats();
+      // 异步加载状态条数据
+      this.loadStatusBars();
     } catch (error) {
       this.showToast('删除失败', 'error');
     }
@@ -1750,6 +1853,8 @@ const app = {
       
       await this.loadMonitors();
       await this.loadStats();
+      // 异步加载状态条数据
+      this.loadStatusBars();
       
       // 如果详情弹窗是打开的，刷新详情数据
       if (this.currentDetailId === id) {
@@ -1793,6 +1898,8 @@ const app = {
       
       await this.loadMonitors();
       await this.loadStats();
+      // 异步加载状态条数据
+      this.loadStatusBars();
     } catch (error) {
       this.showToast('批量检测失败', 'error');
     } finally {
@@ -2214,6 +2321,8 @@ const app = {
     this.refreshInterval = setInterval(async () => {
       await this.loadMonitors();
       await this.loadStats();
+      // 异步加载状态条数据
+      this.loadStatusBars();
       
       // 如果详情弹窗是打开的，也刷新详情数据
       if (this.currentDetailId) {
@@ -2329,7 +2438,12 @@ const app = {
       document.getElementById('smtp-host').value = settings.smtpHost || '';
       document.getElementById('smtp-port').value = settings.smtpPort || '587';
       document.getElementById('smtp-user').value = settings.smtpUser || '';
-      document.getElementById('smtp-password').value = settings.smtpPassword || '';
+      // 不回填敏感密码
+      const smtpPwdInput = document.getElementById('smtp-password');
+      if (smtpPwdInput) {
+        smtpPwdInput.value = '';
+        smtpPwdInput.placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : '';
+      }
       document.getElementById('smtp-from').value = settings.smtpFrom || '';
       document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
       
@@ -2337,7 +2451,10 @@ const app = {
       document.getElementById('smtp-host').value = settings.smtpHost || '';
       document.getElementById('smtp-port').value = settings.smtpPort || '587';
       document.getElementById('smtp-user').value = settings.smtpUser || '';
-      document.getElementById('smtp-password').value = settings.smtpPassword || '';
+      if (smtpPwdInput) {
+        smtpPwdInput.value = '';
+        smtpPwdInput.placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : '';
+      }
       document.getElementById('smtp-from').value = settings.smtpFrom || '';
       document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
       
@@ -2345,6 +2462,22 @@ const app = {
       document.getElementById('webhook-url').value = settings.webhookUrl || '';
       document.getElementById('webhook-method').value = settings.webhookMethod || 'POST';
       document.getElementById('webhook-headers').value = settings.webhookHeaders || '';
+      
+      // 显示日志表大小
+      const logTableSizeText = document.getElementById('log-table-size-text');
+      if (logTableSizeText) {
+        if (settings.logTableSize) {
+          const sizeMB = settings.logTableSize.sizeMB || 0;
+          const rows = settings.logTableSize.rows || 0;
+          let sizeText = `总大小: ${sizeMB.toFixed(2)} MB`;
+          if (rows > 0) {
+            sizeText += ` | 记录数: ${rows.toLocaleString()} 条`;
+          }
+          logTableSizeText.textContent = sizeText;
+        } else {
+          logTableSizeText.textContent = '无法获取日志表信息';
+        }
+      }
       
       // 清空密码字段
       const adminPasswordInput = document.getElementById('admin-password');
@@ -2411,7 +2544,11 @@ const app = {
         document.getElementById('smtp-host').value = settings.smtpHost || '';
         document.getElementById('smtp-port').value = settings.smtpPort || '587';
         document.getElementById('smtp-user').value = settings.smtpUser || '';
-        document.getElementById('smtp-password').value = settings.smtpPassword || '';
+        const smtpPwdInput = document.getElementById('smtp-password');
+        if (smtpPwdInput) {
+          smtpPwdInput.value = '';
+          smtpPwdInput.placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : '';
+        }
         document.getElementById('smtp-from').value = settings.smtpFrom || '';
         document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
       }
@@ -2625,10 +2762,14 @@ const app = {
         smtpHost,
         smtpPort,
         smtpUser,
-        smtpPassword,
         smtpFrom,
         smtpSecure
       };
+
+      // SMTP 密码：只有用户输入了才更新（留空表示不修改）
+      if (smtpPassword) {
+        requestBody.smtpPassword = smtpPassword;
+      }
       
       // 只有在填写了密码时才发送密码字段
       if (adminPassword) {
@@ -2723,7 +2864,7 @@ const app = {
       const result = await response.json();
       this.showToast(`已成功删除 ${result.deletedRecords || 0} 条历史记录，页面即将刷新...`, 'success');
       
-      // 刷新页面以更新所有数据
+      // 刷新页面以更新所有数据（包括日志表大小）
       setTimeout(() => {
         location.reload();
       }, 1000);
