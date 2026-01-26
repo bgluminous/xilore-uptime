@@ -13,8 +13,14 @@
   --border-dark: #cbd5e1;
   
   --text-primary: #1e293b;
-  --text-secondary: #64748b;
-  --text-muted: #94a3b8;
+  /* 全站去灰字：secondary/muted 也使用主文本色 */
+  --text-secondary: var(--text-primary);
+  --text-muted: var(--text-primary);
+  /* 需要灰色用于非文字场景时使用这些变量 */
+  --ui-secondary: #64748b;
+  --ui-muted: #94a3b8;
+  /* placeholder 专用：用主色+透明度（不等于灰字变量） */
+  --placeholder-color: rgba(30, 41, 59, 0.45);
   
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
@@ -28,7 +34,7 @@
   --font-mono: 'Consolas', 'Monaco', 'Courier New', monospace;
   
   --chart-grid: #e2e8f0;
-  --chart-text: #94a3b8;
+  --chart-text: var(--text-primary);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07);
   --logo-filter: none;
@@ -53,14 +59,20 @@
   --border-dark: #3a3a4a;
   
   --text-primary: #f8f9fa;
-  --text-secondary: #a8a8b8;
-  --text-muted: #6a6a7a;
+  /* 全站去灰字：secondary/muted 也使用主文本色 */
+  --text-secondary: var(--text-primary);
+  --text-muted: var(--text-primary);
+  /* 需要灰色用于非文字场景时使用这些变量 */
+  --ui-secondary: #a8a8b8;
+  --ui-muted: #6a6a7a;
+  /* placeholder 专用：用主色+透明度 */
+  --placeholder-color: rgba(248, 249, 250, 0.45);
   
   --accent: #3b82f6;
   --accent-hover: #60a5fa;
   
   --chart-grid: #2a2a3a;
-  --chart-text: #6a6a7a;
+  --chart-text: var(--text-primary);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
   --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.6);
   --logo-filter: brightness(1.1) contrast(1.05);
@@ -353,7 +365,8 @@ body {
 }
 
 .form-group input::placeholder {
-  color: var(--text-muted);
+  color: var(--placeholder-color);
+  opacity: 1;
 }
 
 .form-group select {
@@ -693,7 +706,7 @@ body {
 /* ============ 统计卡片 ============ */
 .stats-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 16px;
   margin-bottom: 24px;
 }
@@ -728,6 +741,10 @@ body {
   border-left-color: #3b82f6;
 }
 
+.stat-card.paused {
+  border-left-color: var(--status-unknown);
+}
+
 .stat-value {
   font-size: 1.75rem;
   font-weight: 700;
@@ -755,6 +772,10 @@ body {
 
 .stat-card.uptime .stat-icon svg {
   color: #3b82f6;
+}
+
+.stat-card.paused .stat-icon svg {
+  color: var(--status-unknown);
 }
 
 /* 确保图标在暗色模式下也有正确的颜色 */
@@ -821,12 +842,12 @@ body {
 }
 
 .monitor-item.paused .monitor-status {
-  background: var(--text-muted) !important;
+  background: var(--ui-muted) !important;
 }
 
 .monitor-paused-badge {
   display: inline-block;
-  background: var(--text-muted);
+  background: var(--ui-muted);
   color: var(--bg-card);
   font-size: 0.7rem;
   font-weight: 500;
@@ -866,6 +887,23 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 300px;
+}
+
+.monitor-target-link {
+  /* 不继承 meta 的灰色，提升可见性 */
+  color: var(--text-primary);
+  text-decoration: none;
+  display: inline-block;
+  padding: 2px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-body);
+}
+
+.monitor-target-link:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-dark);
+  text-decoration: none;
 }
 
 .monitor-type {
@@ -1733,7 +1771,8 @@ body {
 }
 
 .danger-action-wrapper input::placeholder {
-  color: var(--text-muted);
+  color: var(--placeholder-color);
+  opacity: 1;
 }
 
 .danger-action-wrapper .btn-danger {
@@ -1767,6 +1806,36 @@ body {
 }
 
 .btn-danger svg {
+  width: 16px;
+  height: 16px;
+}
+
+.btn-warning {
+  background: var(--status-unknown);
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.btn-warning:hover:not(:disabled) {
+  filter: brightness(0.92);
+}
+
+.btn-warning:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-warning svg {
   width: 16px;
   height: 16px;
 }
@@ -1995,7 +2064,8 @@ body {
 }
 
 .group-input-wrapper input::placeholder {
-  color: var(--text-muted);
+  color: var(--placeholder-color);
+  opacity: 1;
 }
 
 .group-input-wrapper input:focus {
@@ -2291,7 +2361,7 @@ body {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  background: var(--ui-muted);
 }
 
 /* ============ 详情弹窗响应式 ============ */

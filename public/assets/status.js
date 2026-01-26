@@ -58,7 +58,12 @@ const publicApp = {
         document.querySelector('.public-stat-card.down .public-stat-value').textContent = stats.down || 0;
         
         // 计算平均24小时可用率（从监控数据中计算）
-        const monitorsWithUptime = this.monitors.filter(m => m.uptime_24h !== null && m.uptime_24h !== undefined);
+        const monitorsWithUptime = this.monitors.filter(m => {
+          const hasUptime = m.uptime_24h !== null && m.uptime_24h !== undefined;
+          const isPaused = m.enabled === 0 || m.enabled === false;
+          // 暂停服务不计入平均可用率
+          return hasUptime && !isPaused;
+        });
         if (monitorsWithUptime.length > 0) {
           const avgUptime = monitorsWithUptime.reduce((sum, m) => sum + m.uptime_24h, 0) / monitorsWithUptime.length;
           document.querySelector('.public-stat-card.uptime .public-stat-value').textContent = avgUptime.toFixed(2) + '%';

@@ -224,6 +224,10 @@
           <span class="stat-value" id="stat-down">0</span>
           <span class="stat-label"><span class="stat-icon" id="stat-icon-down"></span> 离线</span>
         </div>
+        <div class="stat-card paused">
+          <span class="stat-value" id="stat-paused">0</span>
+          <span class="stat-label"><span class="stat-icon" id="stat-icon-paused"></span> 暂停</span>
+        </div>
         <div class="stat-card uptime">
           <span class="stat-value" id="stat-uptime">-</span>
           <span class="stat-label"><span class="stat-icon" id="stat-icon-uptime"></span> 24小时平均可用率</span>
@@ -355,7 +359,6 @@
         </div>
         
         <div class="form-actions">
-          <button type="button" class="btn-secondary" onclick="app.closeModal()">取消</button>
           <button type="submit" class="btn-primary">保存</button>
         </div>
       </form>
@@ -713,6 +716,7 @@
               <div class="form-group">
                 <label for="delete-all-history-confirm">删除所有检测历史</label>
                 <p class="form-hint">此操作将永久删除所有监控服务的检测历史记录，且无法恢复。请输入 "DELETE" 以确认。</p>
+                <p class="form-hint">提示：清空历史记录后，数据库占用空间可能不会立即变小（InnoDB 通常仅标记空间可复用；是否能立刻回收取决于表空间配置与数据库实现）。</p>
               </div>
               <div class="danger-action-wrapper">
                 <div class="danger-input-wrapper">
@@ -728,9 +732,15 @@
               </div>
             </div>
             
-            <div class="modal-footer">
-              <button type="button" class="btn-secondary" onclick="app.closeSettingsModal()">取消</button>
-              <button type="submit" class="btn-primary">保存</button>
+            <div class="modal-footer" id="settings-modal-footer">
+              <button type="button" class="btn-warning" onclick="app.clearCurrentSettingsConfig()" id="settings-clear-btn" style="display: none;">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-right: 6px; vertical-align: middle;">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                </svg>
+                清空配置
+              </button>
+              <button type="submit" class="btn-primary" id="settings-save-btn">保存</button>
             </div>
           </form>
         </div>

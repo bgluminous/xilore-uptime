@@ -1658,13 +1658,14 @@ app.delete('/api/monitors/:id/history/:historyId', authMiddleware, async (req, r
 // 删除所有检测历史
 app.delete('/api/history/all', authMiddleware, async (req, res) => {
   try {
-    const [deleteResult] = await pool.execute('DELETE FROM check_history');
-    log('INFO', '删除所有检测历史成功', { 
-      deletedRecords: deleteResult.affectedRows,
+    // 使用 TRUNCATE 释放表空间（比 DELETE 更适合“全清空”）
+    await pool.execute('TRUNCATE TABLE check_history');
+    log('INFO', '清空所有检测历史成功(TRUNCATE)', {
       user: req.user?.username 
     });
     
-    res.json({ success: true, deletedRecords: deleteResult.affectedRows });
+    // TRUNCATE 不返回 affectedRows，这里统一返回 success
+    res.json({ success: true });
   } catch (e) {
     log('ERROR', '删除所有检测历史失败', { error: e.message, user: req.user?.username });
     res.status(500).json({ error: e.message });
@@ -2251,6 +2252,39 @@ app.put('/api/settings', authMiddleware, async (req, res) => {
         ['smtpSecure', smtpSecure ? '1' : '0', smtpSecure ? '1' : '0']
       );
     }
+
+    // 更新 Webhook 配置
+    if (webhookUrl !== undefined) {
+      const value = webhookUrl || '';
+      await pool.execute(
+        `INSERT INTO settings (key_name, value)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE value = ?, updated_at = CURRENT_TIMESTAMP`,
+        ['webhookUrl', value, value]
+      );
+    }
+
+    if (webhookMethod !== undefined) {
+      const value = (webhookMethod || 'POST').toUpperCase();
+      await pool.execute(
+        `INSERT INTO settings (key_name, value)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE value = ?, updated_at = CURRENT_TIMESTAMP`,
+        ['webhookMethod', value, value]
+      );
+    }
+
+    if (webhookHeaders !== undefined) {
+      const value = typeof webhookHeaders === 'string'
+        ? (webhookHeaders || '')
+        : JSON.stringify(webhookHeaders || {});
+      await pool.execute(
+        `INSERT INTO settings (key_name, value)
+         VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE value = ?, updated_at = CURRENT_TIMESTAMP`,
+        ['webhookHeaders', value, value]
+      );
+    }
     
     // 返回更新后的设置
     const [titleRows] = await pool.execute(
@@ -2412,39 +2446,39 @@ function scheduleLogCleanup() {
 
 app.get('/api/stats', authMiddleware, async (req, res) => {
   try {
-    const [total] = await pool.execute('SELECT COUNT(*) as count FROM monitors');
-    const [up] = await pool.execute("SELECT COUNT(*) as count FROM monitors WHERE status = 'up'");
-    const [down] = await pool.execute("SELECT COUNT(*) as count FROM monitors WHERE status = 'down'");
-    
-    // 计算24小时平均可用率（warning也算作可用）
-    const [uptimeRows] = await pool.execute(
-      `SELECT 
-        m.id,
-        COUNT(*) as total_checks,
-        SUM(CASE WHEN h.status = 'up' OR h.status = 'warning' THEN 1 ELSE 0 END) as up_checks
-      FROM monitors m
-      LEFT JOIN check_history h ON m.id = h.monitor_id 
-        AND h.checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-      GROUP BY m.id`
+    // 统计信息合并为一次查询（减少 DB 往返）
+    const [statsRows] = await pool.execute(
+      `SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END) AS paused,
+        SUM(CASE WHEN enabled = 1 AND (status = 'up' OR status = 'warning') THEN 1 ELSE 0 END) AS up,
+        SUM(CASE WHEN enabled = 1 AND (status IS NULL OR status NOT IN ('up', 'warning')) THEN 1 ELSE 0 END) AS down
+      FROM monitors`
     );
+    const base = statsRows[0] || { total: 0, paused: 0, up: 0, down: 0 };
     
-    let totalUptime = 0;
-    let monitorCount = 0;
-    
-    uptimeRows.forEach(row => {
-      if (row.total_checks > 0) {
-        const uptime = (row.up_checks / row.total_checks) * 100;
-        totalUptime += uptime;
-        monitorCount++;
-      }
-    });
-    
-    const avgUptime = monitorCount > 0 ? (totalUptime / monitorCount) : 100;
+    // 计算24小时平均可用率（warning也算作可用）- 聚合在 DB 内完成
+    const [uptimeAvgRows] = await pool.execute(
+      `SELECT AVG(t.uptime) AS avg_uptime
+       FROM (
+         SELECT
+           m.id,
+           (SUM(CASE WHEN h.status IN ('up', 'warning') THEN 1 ELSE 0 END) / COUNT(h.id)) * 100 AS uptime
+         FROM monitors m
+         JOIN check_history h ON m.id = h.monitor_id
+          AND h.checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+         WHERE m.enabled = 1
+         GROUP BY m.id
+       ) t`
+    );
+    const avgUptimeRaw = uptimeAvgRows[0]?.avg_uptime;
+    const avgUptime = avgUptimeRaw === null || avgUptimeRaw === undefined ? 100 : Number(avgUptimeRaw);
     
     res.json({
-      total: total[0].count,
-      up: up[0].count,
-      down: down[0].count,
+      total: Number(base.total) || 0,
+      up: Number(base.up) || 0,
+      down: Number(base.down) || 0,
+      paused: Number(base.paused) || 0,
       avgUptime24h: avgUptime
     });
   } catch (e) {
@@ -2664,7 +2698,7 @@ app.get('/api/public/stats', async (req, res) => {
         SUM(CASE WHEN status = 'down' THEN 1 ELSE 0 END) as down,
         SUM(CASE WHEN status = 'unknown' THEN 1 ELSE 0 END) as unknown
       FROM monitors 
-      WHERE is_public = 1`
+      WHERE is_public = 1 AND enabled = 1`
     );
     
     const stats = rows[0] || { total: 0, up: 0, down: 0, unknown: 0 };
@@ -2673,12 +2707,12 @@ app.get('/api/public/stats', async (req, res) => {
     const [uptimeRows] = await pool.execute(
       `SELECT 
         m.id,
-        COUNT(*) as total_checks,
+        COUNT(h.id) as total_checks,
         SUM(CASE WHEN h.status = 'up' OR h.status = 'warning' THEN 1 ELSE 0 END) as up_checks
       FROM monitors m
       LEFT JOIN check_history h ON m.id = h.monitor_id 
         AND h.checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-      WHERE m.is_public = 1
+      WHERE m.is_public = 1 AND m.enabled = 1
       GROUP BY m.id`
     );
     

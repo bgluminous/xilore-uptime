@@ -2,7 +2,7 @@
 
 一个简洁高效的网站监控工具，支持 HTTP、TCP 端口和 ICMP Ping 检测。
 
-![Xilore Uptime](https://img.shields.io/badge/version-1.6.0-blue)
+![Xilore Uptime](https://img.shields.io/badge/version-1.6.1-blue)
 ![Node.js](https://img.shields.io/badge/node-%3E%3D16.0.0-green)
 ![License](https://img.shields.io/badge/license-Luminous-orange)
 
@@ -105,7 +105,7 @@ xilore-uptime/
 |   ├── assets/          # 资源文件
 │   |   ├── style.css    # 样式
 │   |   ├── app.js       # 前端逻辑
-│   |   ├── chart.js     # 图表
+│   |   ├── third/chart.js     # 图表（第三方库）
 │   |   ├── setup.js     # 安装向导逻辑
 │   |   ├── status.js    # 公开页逻辑
 │   |   └── utils.js     # 工具

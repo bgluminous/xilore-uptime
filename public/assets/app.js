@@ -6,6 +6,7 @@ const ICON_DEFS = {
   xCircle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>',
   helpCircle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r="0.5" fill="currentColor"/></svg>',
   alertTriangle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><circle cx="12" cy="17" r="0.5" fill="currentColor"/></svg>',
+  pause: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>',
   
   // 导航和箭头
   arrowUp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
@@ -53,6 +54,7 @@ const icons = {
   down: ICON_DEFS.xCircle,
   unknown: ICON_DEFS.helpCircle,
   warning: ICON_DEFS.alertTriangle,
+  paused: ICON_DEFS.pause,
   
   // 监控属性
   type: ICON_DEFS.box,
@@ -457,6 +459,20 @@ const app = {
   detailChart: null,
   // 记录每个监控的状态条签名，避免无变化重绘导致闪烁
   statusBarSignatures: new Map(),
+  currentSettingsSection: 'general',
+
+  buildMonitorOpenUrl(m) {
+    const rawTarget = (m?.target || '').trim();
+    if (!rawTarget) return null;
+
+    // 已经是 URL
+    if (/^https?:\/\//i.test(rawTarget)) return rawTarget;
+
+    // 非 URL：尽量按域名/IP 打开（TCP/PING 也允许用户点击跳转）
+    const port = m?.port ? String(m.port).trim() : '';
+    if (port) return `http://${rawTarget}:${port}`;
+    return `http://${rawTarget}`;
+  },
   
   initIcons() {
     // 统计卡片图标
@@ -468,6 +484,7 @@ const app = {
     setIcon('stat-icon-total', icons.total);
     setIcon('stat-icon-up', icons.up);
     setIcon('stat-icon-down', icons.down);
+    setIcon('stat-icon-paused', icons.paused);
     setIcon('stat-icon-uptime', icons.uptime);
     
     // 详情弹窗图标
@@ -771,6 +788,8 @@ const app = {
       document.getElementById('stat-total').textContent = stats.total;
       document.getElementById('stat-up').textContent = stats.up;
       document.getElementById('stat-down').textContent = stats.down;
+      const pausedEl = document.getElementById('stat-paused');
+      if (pausedEl) pausedEl.textContent = stats.paused ?? 0;
       const uptimeValue = stats.avgUptime24h !== null && stats.avgUptime24h !== undefined 
         ? stats.avgUptime24h.toFixed(2) + '%' 
         : '-';
@@ -1007,6 +1026,12 @@ const app = {
       : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
     const pauseTitle = isPaused ? '恢复检测' : '暂停检测';
     
+    const targetText = `${this.escapeHtml(m.target)}${m.port ? ':' + m.port : ''}`;
+    const openUrl = this.buildMonitorOpenUrl(m);
+    const targetHtml = openUrl
+      ? `<a class="monitor-target monitor-target-link" href="${this.escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();" title="打开 ${this.escapeHtml(openUrl)}">${targetText}</a>`
+      : `<span class="monitor-target">${targetText}</span>`;
+
     return `
       <div class="monitor-item ${m.status}${isPaused ? ' paused' : ''}" data-id="${m.id}">
         <div class="monitor-status"></div>
@@ -1014,7 +1039,7 @@ const app = {
           <div class="monitor-name">${this.escapeHtml(m.name)}${isPaused ? '<span class="monitor-paused-badge">已暂停</span>' : ''}</div>
           <div class="monitor-meta">
             <span class="monitor-type">${m.type.toUpperCase()}</span>
-            <span class="monitor-target">${this.escapeHtml(m.target)}${m.port ? ':' + m.port : ''}</span>
+            ${targetHtml}
           </div>
         </div>
         <div class="monitor-stats">
@@ -2502,6 +2527,8 @@ const app = {
   },
   
   switchSettingsSection(section) {
+    this.currentSettingsSection = section;
+
     // 更新菜单项状态
     document.querySelectorAll('.settings-menu-item').forEach(item => {
       item.classList.remove('active');
@@ -2533,6 +2560,40 @@ const app = {
       setTimeout(() => {
         this.loadEmailConfig();
       }, 0);
+    }
+
+    // “清空配置”按钮（放在保存旁边），仅邮件/Webhook 显示
+    const clearBtn = document.getElementById('settings-clear-btn');
+    if (clearBtn) {
+      if (section === 'email') {
+        clearBtn.style.display = 'inline-flex';
+        clearBtn.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-right: 6px; vertical-align: middle;">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+          </svg>
+          清空邮件配置
+        `;
+        clearBtn.title = '清空并删除已保存的邮件配置';
+      } else if (section === 'webhook') {
+        clearBtn.style.display = 'inline-flex';
+        clearBtn.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-right: 6px; vertical-align: middle;">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+          </svg>
+          清空 Webhook 配置
+        `;
+        clearBtn.title = '清空并删除已保存的 Webhook 配置';
+      } else {
+        clearBtn.style.display = 'none';
+      }
+    }
+
+    // 危险操作不需要保存按钮/底部操作区
+    const footer = document.getElementById('settings-modal-footer');
+    if (footer) {
+      footer.style.display = section === 'danger' ? 'none' : 'flex';
     }
   },
   
@@ -2699,6 +2760,130 @@ const app = {
     }
   },
   
+  async clearCurrentSettingsConfig() {
+    if (this.currentSettingsSection === 'email') {
+      return this.clearEmailConfig('settings-clear-btn');
+    }
+    if (this.currentSettingsSection === 'webhook') {
+      return this.clearWebhookConfig('settings-clear-btn');
+    }
+  },
+
+  async clearEmailConfig(buttonId = 'clear-email-btn') {
+    if (!confirm('确定要清空邮件配置吗？这将删除已保存的 SMTP 配置（包含密码），用于停用邮件通知。')) {
+      return;
+    }
+
+    const btn = document.getElementById(buttonId);
+    const originalText = btn ? btn.innerHTML : null;
+    if (btn) {
+      btn.disabled = true;
+      btn.classList.add('loading');
+      btn.innerHTML = '<span>清空中...</span>';
+    }
+
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          smtpHost: '',
+          smtpPort: '587',
+          smtpUser: '',
+          smtpPassword: '',
+          smtpFrom: '',
+          smtpSecure: false
+        })
+      });
+
+      if (response.status === 401) {
+        auth.showLogin();
+        return;
+      }
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || '清空邮件配置失败');
+      }
+
+      const settings = await response.json().catch(() => ({}));
+
+      document.getElementById('smtp-host').value = settings.smtpHost || '';
+      document.getElementById('smtp-port').value = settings.smtpPort || '587';
+      document.getElementById('smtp-user').value = settings.smtpUser || '';
+      document.getElementById('smtp-from').value = settings.smtpFrom || '';
+      document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
+      const smtpPwdInput = document.getElementById('smtp-password');
+      if (smtpPwdInput) {
+        smtpPwdInput.value = '';
+        smtpPwdInput.placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : '';
+      }
+
+      this.showToast('邮件配置已清空', 'success');
+    } catch (error) {
+      this.showToast(error.message || '清空邮件配置失败', 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.classList.remove('loading');
+        if (originalText !== null) btn.innerHTML = originalText;
+      }
+    }
+  },
+
+  async clearWebhookConfig(buttonId = 'clear-webhook-btn') {
+    if (!confirm('确定要清空 Webhook 配置吗？这将删除已保存的 Webhook 配置，用于停用 Webhook 通知。')) {
+      return;
+    }
+
+    const btn = document.getElementById(buttonId);
+    const originalText = btn ? btn.innerHTML : null;
+    if (btn) {
+      btn.disabled = true;
+      btn.classList.add('loading');
+      btn.innerHTML = '<span>清空中...</span>';
+    }
+
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          webhookUrl: '',
+          webhookMethod: 'POST',
+          webhookHeaders: ''
+        })
+      });
+
+      if (response.status === 401) {
+        auth.showLogin();
+        return;
+      }
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || '清空 Webhook 配置失败');
+      }
+
+      const settings = await response.json().catch(() => ({}));
+      document.getElementById('webhook-url').value = settings.webhookUrl || '';
+      document.getElementById('webhook-method').value = settings.webhookMethod || 'POST';
+      document.getElementById('webhook-headers').value = settings.webhookHeaders || '';
+
+      this.showToast('Webhook 配置已清空', 'success');
+    } catch (error) {
+      this.showToast(error.message || '清空 Webhook 配置失败', 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.classList.remove('loading');
+        if (originalText !== null) btn.innerHTML = originalText;
+      }
+    }
+  },
+
   async saveSettings(event) {
     event.preventDefault();
     
@@ -2763,7 +2948,10 @@ const app = {
         smtpPort,
         smtpUser,
         smtpFrom,
-        smtpSecure
+        smtpSecure,
+        webhookUrl,
+        webhookMethod,
+        webhookHeaders: webhookHeadersText ? JSON.stringify(webhookHeaders) : ''
       };
 
       // SMTP 密码：只有用户输入了才更新（留空表示不修改）
@@ -2809,7 +2997,12 @@ const app = {
       document.getElementById('smtp-host').value = settings.smtpHost || '';
       document.getElementById('smtp-port').value = settings.smtpPort || '587';
       document.getElementById('smtp-user').value = settings.smtpUser || '';
-      document.getElementById('smtp-password').value = settings.smtpPassword || '';
+      // 不回填敏感密码，仅更新 placeholder
+      const smtpPwdInput = document.getElementById('smtp-password');
+      if (smtpPwdInput) {
+        smtpPwdInput.value = '';
+        smtpPwdInput.placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : '';
+      }
       document.getElementById('smtp-from').value = settings.smtpFrom || '';
       document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
       
@@ -2861,8 +3054,8 @@ const app = {
         throw new Error(data.error || '删除失败');
       }
       
-      const result = await response.json();
-      this.showToast(`已成功删除 ${result.deletedRecords || 0} 条历史记录，页面即将刷新...`, 'success');
+      await response.json().catch(() => ({}));
+      this.showToast('已成功清空所有历史记录，页面即将刷新...', 'success');
       
       // 刷新页面以更新所有数据（包括日志表大小）
       setTimeout(() => {
