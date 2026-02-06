@@ -1,30 +1,44 @@
-# 使用官方 Node.js 镜像作为基础镜像
-FROM node:18-alpine
+# ========== 构建阶段：编译 TypeScript ==========
+FROM node:18-alpine AS builder
 
-# 安装必要的系统工具（用于 Ping 功能）
-RUN apk add --no-cache iputils
-
-# 设置工作目录
 WORKDIR /app
 
-# 设置环境变量
-ENV NODE_ENV=production
-
-# 复制 package.json 和 package-lock.json
+# 复制依赖描述
 COPY package*.json ./
-
-# 安装项目依赖
+# 安装全部依赖（含 devDependencies，用于 tsc）
 RUN npm install
 
-# 复制项目文件
-COPY . .
+# 只复制需要参与编译的 TS 源码与配置
+COPY tsconfig.json ./
+COPY server ./server
 
-# 暴露端口
+# 编译 TypeScript -> dist/
+RUN npm run build
+
+# ========== 运行阶段 ==========
+FROM node:18-alpine
+
+# 安装 Ping 所需工具
+RUN apk add --no-cache iputils
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# 只安装生产依赖
+COPY package*.json ./
+RUN npm install --production
+
+# 从构建阶段复制编译产物
+COPY --from=builder /app/dist ./dist
+# 静态资源无需编译，直接从上下文复制
+COPY public ./public
+COPY server/templates ./server/templates
+
+# 运行时通过卷挂载 data 目录（如 /app/data）存放 config.json
 EXPOSE 3000
 
-# 健康检查
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3000/', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
-# 启动应用
 CMD ["npm", "start"]

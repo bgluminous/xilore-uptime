@@ -2,7 +2,12 @@
 
 ## Xilore Uptime Monitor
 
-## 版本 2.0.0（当前版本）- 2026-01-26
+## 版本 2.0.1（当前版本）- 2026-01-26
+
+- **Dockerfile 多阶段构建**：构建阶段使用 Node 安装全部依赖并执行 `npm run build` 编译 TypeScript 生成 `dist/`，运行阶段仅复制编译产物、`public/` 与 `server/templates/`，只安装生产依赖，镜像更精简
+- 版本号更新至 2.0.1
+
+## 版本 2.0.0 - 2026-01-26
 
 ### 主要变更
 - **服务端迁移至 TypeScript**：`server.ts`、`database.ts`，类型定义 `db-types.ts`
