@@ -133,7 +133,7 @@
         <h1>Xilore Uptime</h1>
       </div>
       
-      <form id="login-form" onsubmit="auth.login(event)">
+      <form id="login-form">
         <div class="form-group">
           <label for="login-username">用户名</label>
           <input type="text" id="login-username" required autofocus>
@@ -247,7 +247,7 @@
         <button class="btn-close" onclick="app.closeModal()">×</button>
       </div>
       
-      <form id="monitor-form" onsubmit="app.saveMonitor(event)">
+      <form id="monitor-form">
         <input type="hidden" id="monitor-id">
         
         <div class="form-row">
@@ -511,9 +511,10 @@
             </svg>
             <span>创建新分组</span>
           </div>
-          <form class="group-add-form" onsubmit="app.addGroup(event)">
+          <form class="group-add-form" id="group-add-form">
             <div class="group-input-wrapper">
-              <input type="text" id="new-group-name" placeholder="输入分组名称..." required>
+              <label for="new-group-name" class="visually-hidden">分组名称</label>
+              <input type="text" id="new-group-name" placeholder="输入分组名称..." required aria-label="分组名称">
               <button type="submit" class="btn-primary btn-add-group">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                   <line x1="12" y1="5" x2="12" y2="19"/>
@@ -580,7 +581,7 @@
         
         <!-- 右侧内容 -->
         <div class="settings-content">
-          <form onsubmit="app.saveSettings(event)">
+          <form id="settings-form">
             <!-- 基础设置 -->
             <div class="settings-section" id="settings-section-general">
               <div class="form-group">
@@ -599,20 +600,20 @@
             <!-- 管理员账户 -->
             <div class="settings-section" id="settings-section-admin" style="display: none;">
               <div class="form-group">
-                <label for="admin-email">管理员邮箱</label>
-                <input type="email" id="admin-email" placeholder="用于接收通知（可选）">
+                <label for="admin-email-settings">管理员邮箱</label>
+                <input type="email" id="admin-email-settings" placeholder="用于接收通知（可选）">
                 <p class="form-hint">用于接收系统通知的邮箱地址</p>
               </div>
               
               <div class="form-group">
-                <label for="admin-password">新密码</label>
-                <input type="password" id="admin-password" placeholder="留空则不修改密码" minlength="6">
+                <label for="admin-password-settings">新密码</label>
+                <input type="password" id="admin-password-settings" placeholder="留空则不修改密码" minlength="6">
                 <p class="form-hint">如需修改密码，请输入新密码（至少6个字符）</p>
               </div>
               
               <div class="form-group">
-                <label for="admin-password-confirm">确认新密码</label>
-                <input type="password" id="admin-password-confirm" placeholder="再次输入新密码">
+                <label for="admin-password-confirm-settings">确认新密码</label>
+                <input type="password" id="admin-password-confirm-settings" placeholder="再次输入新密码">
                 <p class="form-hint">请再次输入新密码以确认</p>
               </div>
             </div>
@@ -633,7 +634,7 @@
                 </div>
                 
                 <div class="form-group">
-                  <label for="smtp-secure-label" style="display: block; margin-bottom: 6px; font-size: 0.85rem; font-weight: 500; color: var(--text-secondary);">安全连接</label>
+                  <label for="smtp-secure" style="display: block; margin-bottom: 6px; font-size: 0.85rem; font-weight: 500; color: var(--text-secondary);">安全连接</label>
                   <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 0;">
                     <input type="checkbox" id="smtp-secure" style="width: auto; margin: 0;">
                     <span>使用 SSL/TLS</span>

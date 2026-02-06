@@ -2,7 +2,7 @@
 
 一个简洁高效的网站监控工具，支持 HTTP、TCP 端口和 ICMP Ping 检测。
 
-![Xilore Uptime](https://img.shields.io/badge/version-1.6.1-blue)
+![Xilore Uptime](https://img.shields.io/badge/version-2.0.0-blue)
 ![Node.js](https://img.shields.io/badge/node-%3E%3D16.0.0-green)
 ![License](https://img.shields.io/badge/license-Luminous-orange)
 
@@ -54,17 +54,19 @@ services:
 npm install
 
 # 2. 启动服务
-# 开发/本地运行
+# 开发/本地运行（TypeScript 直接运行）
 npm run dev
 
-# 或生产环境运行
+# 生产环境：先构建再启动
+npm run build
 npm start
 
 # 3. 访问 http://localhost:3000
 # 首次访问将进入安装向导
 ```
 
-> 📖 详细部署说明请查看 [DEPLOYMENT.md](docs/DEPLOYMENT.md)
+> 📖 详细部署说明请查看 [DEPLOYMENT.md](docs/DEPLOYMENT.md)  
+> 📝 版本更新说明请查看 [UPDATE_NOTE.md](docs/UPDATE_NOTE.md)
 
 ## 📚 使用说明
 
@@ -92,7 +94,7 @@ npm start
 
 ## 🛠️ 技术栈
 
-- **后端**: Node.js + Express
+- **后端**: Node.js + Express（TypeScript 编写，构建后运行）
 - **数据库**: MySQL 5.7+ / 8.0
 - **认证**: JWT + bcrypt
 - **前端**: 原生 HTML/CSS/JavaScript
@@ -102,24 +104,27 @@ npm start
 ```
 xilore-uptime/
 ├── public/              # 前端静态文件
-|   ├── assets/          # 资源文件
-│   |   ├── style.css    # 样式
-│   |   ├── app.js       # 前端逻辑
-│   |   ├── third/chart.js     # 图表（第三方库）
-│   |   ├── setup.js     # 安装向导逻辑
-│   |   ├── status.js    # 公开页逻辑
-│   |   └── utils.js     # 工具
+│   ├── assets/          # 资源文件
+│   │   ├── style.css    # 样式
+│   │   ├── app.js       # 前端逻辑
+│   │   ├── third/chart.js  # 图表（第三方库）
+│   │   ├── setup.js     # 安装向导逻辑
+│   │   ├── status.js    # 公开页逻辑
+│   │   └── utils.js     # 工具
 │   ├── favicon.ico      # 图标
 │   ├── favicon.png      # 图标
 │   ├── index.html       # 管理页
 │   ├── setup.html       # 安装向导页
-│   └── status.html      # 公开展示页
-├── server/              # 服务端代码
-│   ├── server.js        # 主服务入口
-│   ├── database.js      # 数据库初始化/迁移
+│   ├── status.html      # 公开展示页
+│   └── 404.html         # 404 页面
+├── server/              # 服务端源码（TypeScript）
+│   ├── server.ts        # 主服务入口
+│   ├── database.ts      # 数据库初始化/迁移
+│   ├── db-types.ts      # 数据库类型定义
 │   └── templates/       # 邮件 HTML 模板
 │       ├── monitor-status-email.template
 │       └── test-email.template
+├── dist/                # 构建产物（npm run build 生成）
 ├── Dockerfile           # Docker 镜像配置
 ├── package.json         # 项目依赖
 ├── data/                # 运行数据（默认：config.json）

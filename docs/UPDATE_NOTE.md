@@ -2,7 +2,20 @@
 
 ## Xilore Uptime Monitor
 
-## 版本 1.6.1 (当前版本) - 2026-01-26
+## 版本 2.0.0（当前版本）- 2026-01-26
+
+### 主要变更
+- **服务端迁移至 TypeScript**：`server.ts`、`database.ts`，类型定义 `db-types.ts`
+- **构建流程**：开发使用 `ts-node` 直接运行（`npm run dev`），生产需先 `npm run build` 再 `npm start`，产物输出到 `dist/`
+- **新增 404 页面**：`public/404.html` 及配套资源，未匹配路由友好提示
+- **入口与依赖**：`package.json` 入口改为 `dist/server/server.js`，新增 TypeScript 相关 devDependencies
+- **文档**：项目结构、技术栈、启动说明与 README 同步更新
+
+### 升级说明（1.x → 2.0）
+- 生产部署需先执行 `npm run build`，再使用 `npm start` 或 `node dist/server/server.js` 启动
+- Docker 镜像已按新构建流程制作，使用 `bgluminous/xilore-uptime:latest` 无需变更
+
+## 版本 1.6.1 - 2026-01-26
 
 - 优化统计接口：合并查询、增加暂停数量统计，公开统计排除暂停服务
 - 清空历史记录改用 TRUNCATE，支持释放表空间并同步修正前端提示
