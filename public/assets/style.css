@@ -1,4 +1,12 @@
-/* ============ CSS Variables - Flat Design ============ */
+/*
+ * Xilore Uptime - 主样式表
+ * 结构：1 变量与主题 | 2 基础与重置 | 3 安装向导与登录 | 4 表单 | 5 按钮
+ *       6 主布局与导航 | 7 统计卡片 | 8 监控列表 | 9 状态条 | 10 空状态
+ *       11 模态框 | 12 历史表与 Toast | 13 响应式(主应用) | 14 分组 | 15 设置模态框
+ *       16 详情弹窗 | 17 图标与工具 | 18 公开展示页
+ */
+
+/* ============ 1. 变量与主题 ============ */
 :root {
   --bg-body: #f5f7fa;
   --bg-white: #ffffff;
@@ -6,12 +14,12 @@
   --bg-hover: #f1f5f9;
   --bg-card: #ffffff;
   --bg-pattern: radial-gradient(circle at 20% 50%, rgba(37, 99, 235, 0.03) 0%, transparent 50%),
-                radial-gradient(circle at 80% 80%, rgba(16, 185, 129, 0.03) 0%, transparent 50%);
+  radial-gradient(circle at 80% 80%, rgba(16, 185, 129, 0.03) 0%, transparent 50%);
   --bg-overlay: linear-gradient(135deg, rgba(255, 255, 255, 0.02) 0%, transparent 100%);
-  
+
   --border-color: #e2e8f0;
   --border-dark: #cbd5e1;
-  
+
   --text-primary: #1e293b;
   /* 全站去灰字：secondary/muted 也使用主文本色 */
   --text-secondary: var(--text-primary);
@@ -21,18 +29,20 @@
   --ui-muted: #94a3b8;
   /* placeholder 专用：用主色+透明度（不等于灰字变量） */
   --placeholder-color: rgba(30, 41, 59, 0.45);
-  
+
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
-  
+
   --status-up: #10b981;
   --status-down: #ef4444;
   --status-unknown: #f59e0b;
-  
+
   --radius: 6px;
+  /* 数据块底色（响应时间、可用率等，与主背景区分） */
+  --bg-stat-block: rgba(0, 0, 0, 0.05);
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
   --font-mono: 'Consolas', 'Monaco', 'Courier New', monospace;
-  
+
   --chart-grid: #e2e8f0;
   --chart-text: var(--text-primary);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
@@ -53,24 +63,22 @@
   border: 0;
 }
 
-/* ============ Dark Theme - 优雅深色 ============ */
+/* --- 深色主题 --- */
 [data-theme="dark"] {
   --bg-body: #0a0a0f;
   --bg-white: #1a1a24;
   --bg-dark: #0a0a0f;
   --bg-hover: #252535;
   --bg-card: #1a1a24;
-  --bg-pattern: 
-    radial-gradient(circle at 20% 30%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
-    radial-gradient(circle at 80% 70%, rgba(139, 92, 246, 0.06) 0%, transparent 50%),
-    radial-gradient(circle at 50% 50%, rgba(16, 185, 129, 0.04) 0%, transparent 70%);
-  --bg-overlay: 
-    linear-gradient(135deg, rgba(59, 130, 246, 0.03) 0%, transparent 50%),
-    linear-gradient(225deg, rgba(139, 92, 246, 0.02) 0%, transparent 50%);
-  
+  --bg-pattern: radial-gradient(circle at 20% 30%, rgba(59, 130, 246, 0.08) 0%, transparent 50%),
+  radial-gradient(circle at 80% 70%, rgba(139, 92, 246, 0.06) 0%, transparent 50%),
+  radial-gradient(circle at 50% 50%, rgba(16, 185, 129, 0.04) 0%, transparent 70%);
+  --bg-overlay: linear-gradient(135deg, rgba(59, 130, 246, 0.03) 0%, transparent 50%),
+  linear-gradient(225deg, rgba(139, 92, 246, 0.02) 0%, transparent 50%);
+
   --border-color: #2a2a3a;
   --border-dark: #3a3a4a;
-  
+
   --text-primary: #f8f9fa;
   /* 全站去灰字：secondary/muted 也使用主文本色 */
   --text-secondary: var(--text-primary);
@@ -80,18 +88,19 @@
   --ui-muted: #6a6a7a;
   /* placeholder 专用：用主色+透明度 */
   --placeholder-color: rgba(248, 249, 250, 0.45);
-  
+
   --accent: #3b82f6;
   --accent-hover: #60a5fa;
-  
+
   --chart-grid: #2a2a3a;
   --chart-text: var(--text-primary);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
   --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.6);
   --logo-filter: brightness(1.1) contrast(1.05);
+  --bg-stat-block: rgba(255, 255, 255, 0.06);
 }
 
-/* ============ Reset ============ */
+/* ============ 2. 基础与重置 ============ */
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -112,7 +121,7 @@ body {
   min-height: 100vh;
 }
 
-/* ============ 安装向导 & 登录 ============ */
+/* ============ 3. 安装向导与登录 ============ */
 .setup-container,
 .login-container {
   min-height: 100vh;
@@ -326,7 +335,7 @@ body {
   display: block;
 }
 
-/* ============ 表单 ============ */
+/* ============ 4. 表单 ============ */
 .form-group {
   margin-bottom: 16px;
 }
@@ -404,7 +413,7 @@ body {
   margin-top: 24px;
 }
 
-/* ============ 按钮 ============ */
+/* ============ 5. 按钮 ============ */
 .btn-primary {
   display: inline-flex;
   align-items: center;
@@ -585,11 +594,15 @@ body {
 }
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
-/* ============ 主应用布局 ============ */
+/* ============ 6. 主布局与导航 ============ */
 .app {
   min-height: 100vh;
   display: flex;
@@ -707,6 +720,25 @@ body {
   color: var(--text-secondary);
 }
 
+/* 顶部栏按钮文字（小屏下隐藏，仅保留图标） */
+.header-nav-label {
+  white-space: nowrap;
+}
+
+.btn-logout {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+.btn-logout .btn-logout-icon {
+  display: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+}
+
 /* 主内容 */
 .main-content {
   flex: 1;
@@ -716,7 +748,7 @@ body {
   width: 100%;
 }
 
-/* ============ 统计卡片 ============ */
+/* ============ 7. 统计卡片 ============ */
 .stats-row {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -804,7 +836,7 @@ body {
   color: #60a5fa;
 }
 
-/* ============ 监控列表 ============ */
+/* ============ 8. 监控列表 ============ */
 .monitor-list {
   display: flex;
   flex-direction: column;
@@ -851,7 +883,34 @@ body {
 
 /* 暂停状态样式 */
 .monitor-item.paused {
-  opacity: 0.6;
+  position: relative;
+}
+
+/* 暂停行灰度遮罩（::after 在半透明层，不盖住左侧条区域） */
+.monitor-item.paused::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+  z-index: 1;
+  border-radius: inherit;
+}
+
+/* 暂停行左侧不显示色条（覆盖分组色条，用灰化色与整行遮罩一致，避免露出白块） */
+.group-monitors .monitor-item.paused::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 0;
+  bottom: 0;
+  width: calc(var(--group-bar-width, 4px) + 1px);
+  background: var(--bg-card);
+  background: color-mix(in srgb, var(--bg-card) 72%, black 28%);
+  z-index: 10;
 }
 
 .monitor-item.paused .monitor-status {
@@ -930,8 +989,9 @@ body {
 
 .monitor-stats {
   display: flex;
-  align-items: center;
-  gap: 20px;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 10px;
   font-size: 0.85rem;
   color: var(--text-secondary);
 }
@@ -939,22 +999,209 @@ body {
 .monitor-stat {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: flex-start;
+  justify-content: flex-start;
   min-width: 80px;
-}
-
-.monitor-stat-value {
-  font-family: var(--font-mono), serif;
-  font-weight: 500;
-  color: var(--text-primary);
+  min-height: 48px;
+  padding: 8px 10px;
+  background: var(--bg-stat-block);
+  border-radius: var(--radius);
+  text-align: left;
 }
 
 .monitor-stat-label {
+  order: 1;
   font-size: 0.7rem;
   color: var(--text-muted);
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  text-align: left;
+}
+
+.monitor-stat-value {
+  order: 2;
+  margin-top: auto;
+  align-self: flex-end;
+  font-family: var(--font-mono), serif;
+  font-weight: 500;
+  color: var(--text-primary);
+  text-align: right;
+}
+
+.monitor-stat-response-time {
+  /* 大屏下宽度自适应，不设固定宽度；数值右对齐继承 .monitor-stat-value */
+  box-sizing: border-box;
+}
+
+/* 大屏下无 SSL 时不显示空块 */
+.monitor-stat-ssl-placeholder {
+  display: none;
+}
+
+/* 中等屏（<1280px）：数据区换到下一行，改为「标签: 数值」横向显示；第一行固定为 状态+基础信息+按钮 */
+@media (max-width: 1280px) {
+  .monitor-item {
+    grid-template-columns: auto 1fr auto;
+    grid-template-rows: auto auto auto;
+    gap: 12px 16px;
+  }
+
+  .monitor-item > .monitor-status {
+    grid-row: 1;
+    grid-column: 1;
+  }
+
+  .monitor-item > .monitor-info {
+    grid-row: 1;
+    grid-column: 2;
+    min-width: 0;
+  }
+
+  .monitor-item > .monitor-actions {
+    grid-row: 1;
+    grid-column: 3;
+    justify-content: flex-end;
+    flex-shrink: 0;
+  }
+
+  .monitor-stats {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px 12px;
+    margin-top: 0;
+  }
+
+  /* 小于 1280px 时所有数据块文字左对齐 */
+  .monitor-stat {
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    min-width: auto;
+    min-height: auto;
+    padding: 6px 12px;
+    gap: 6px;
+    text-align: left;
+  }
+
+  .monitor-stat-response-time {
+    width: 150px;
+    min-width: 150px;
+  }
+
+  .monitor-stat-response-time .monitor-stat-value {
+    align-self: auto;
+    text-align: left;
+  }
+
+  .monitor-stat-uptime {
+    width: 180px;
+    min-width: 180px;
+  }
+
+  .monitor-stat-label {
+    order: 1;
+    text-align: left;
+  }
+
+  .monitor-stat-label::after {
+    content: ': ';
+  }
+
+  .monitor-stat-value {
+    order: 2;
+    margin-top: 0;
+    align-self: auto;
+    font-size: 0.7rem;
+    text-align: left;
+  }
+
+  .monitor-item > .monitor-status-bar {
+    grid-row: 3;
+    grid-column: 1 / -1;
+  }
+}
+
+/* 小于 900px：数据区两行两列、表格外框（无块背景）；SSL 无数据时保留空位 */
+@media (max-width: 900px) {
+  .monitor-item {
+    background: transparent;
+  }
+
+  .monitor-item:hover {
+    background: transparent;
+    border-color: var(--border-color);
+  }
+
+  .monitor-stats {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-auto-rows: minmax(36px, auto);
+    gap: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  /* 中间竖线：由容器绘制，保证与列对齐 */
+  .monitor-stats::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--border-color);
+    pointer-events: none;
+  }
+
+  /* 中间横线：由容器绘制，保证与行对齐 */
+  .monitor-stats::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: var(--border-color);
+    pointer-events: none;
+  }
+
+  .monitor-stats .monitor-stat,
+  .monitor-stats .monitor-stat-ssl-placeholder {
+    background: transparent;
+    border-radius: 0;
+    padding: 4px 8px;
+    min-height: 0;
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .monitor-stats .monitor-stat-label {
+    font-size: 0.65rem;
+  }
+
+  .monitor-stats .monitor-stat-value {
+    font-size: 0.65rem;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    min-width: 0;
+  }
+
+  .monitor-stat-ssl-placeholder {
+    display: block;
+    min-height: 36px;
+  }
+
+  .monitor-item > .monitor-stats {
+    min-width: 0;
+  }
 }
 
 .monitor-actions {
@@ -962,7 +1209,7 @@ body {
   gap: 4px;
 }
 
-/* 24小时状态条 - 简洁版本 */
+/* ============ 9. 状态条 ============ */
 .monitor-status-bar {
   grid-column: 1 / -1;
   display: flex;
@@ -1029,6 +1276,7 @@ body {
 .status-bar-thin .status-bar-segment:not(.status-bar-segment-empty) {
   background: #10b981 !important;
 }
+
 .status-bar-thin .status-bar-segment.status-bar-segment-empty {
   background: #6b7280 !important;
 }
@@ -1060,6 +1308,28 @@ body {
   border-radius: 0;
 }
 
+/* 状态条骨架（加载占位） */
+.status-bar-skeleton-container {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  width: 100%;
+  height: 100%;
+}
+
+.status-bar-skeleton-full {
+  flex: 1;
+  min-height: 100%;
+  background: var(--border-color);
+  border-radius: 2px;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
 /* 响应式适配 */
 @media (max-width: 768px) {
   .monitor-status-bar {
@@ -1069,11 +1339,11 @@ body {
     height: 10px;
     min-height: 10px;
   }
-  
+
   .status-bar-segment {
     height: 100%;
   }
-  
+
   .status-bar-thin .status-bar-segment-thin-warning::after,
   .status-bar-thin .status-bar-segment-thin-down::after {
     width: 1.5px;
@@ -1088,18 +1358,18 @@ body {
     height: 8px;
     min-height: 8px;
   }
-  
+
   .status-bar-segment {
     height: 100%;
   }
-  
+
   .status-bar-thin .status-bar-segment-thin-warning::after,
   .status-bar-thin .status-bar-segment-thin-down::after {
     width: 1px;
   }
 }
 
-/* 空状态 */
+/* ============ 10. 空状态 ============ */
 .empty-state {
   text-align: center;
   padding: 60px 20px;
@@ -1118,7 +1388,7 @@ body {
   font-size: 0.9rem;
 }
 
-/* ============ 模态框 ============ */
+/* ============ 11. 模态框 ============ */
 .modal-overlay {
   position: fixed;
   top: 0;
@@ -1232,11 +1502,26 @@ body {
 }
 
 /* 消息列：固定比例宽度，过长显示省略号，悬停看完整内容（title） */
-.history-table th:nth-child(1) { width: 18%; }
-.history-table th:nth-child(2) { width: 12%; }
-.history-table th:nth-child(3) { width: 12%; }
-.history-table th:nth-child(4) { width: 38%; }
-.history-table th:nth-child(5) { width: 60px; }
+.history-table th:nth-child(1) {
+  width: 18%;
+}
+
+.history-table th:nth-child(2) {
+  width: 12%;
+}
+
+.history-table th:nth-child(3) {
+  width: 12%;
+}
+
+.history-table th:nth-child(4) {
+  width: 38%;
+}
+
+.history-table th:nth-child(5) {
+  width: 60px;
+}
+
 .history-table td.history-cell-message {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1273,7 +1558,7 @@ body {
   color: var(--text-muted);
 }
 
-/* ============ Toast ============ */
+/* ============ 12. Toast ============ */
 .toast-container {
   position: fixed;
   bottom: 20px;
@@ -1330,95 +1615,103 @@ body {
   color: var(--status-down);
 }
 
-/* ============ 响应式 ============ */
+/* ============ 13. 响应式（主应用） ============ */
 @media (max-width: 768px) {
   .stats-row {
     grid-template-columns: repeat(2, 1fr);
   }
-  
+
   .monitor-item {
     grid-template-columns: auto 1fr auto;
-    gap: 12px;
+    grid-template-rows: auto auto auto;
+    gap: 12px 16px;
     align-items: center;
   }
-  
+
+  .monitor-item > .monitor-status {
+    grid-row: 1;
+    grid-column: 1;
+  }
+
+  .monitor-item > .monitor-info {
+    grid-row: 1;
+    grid-column: 2;
+    min-width: 0;
+  }
+
+  .monitor-item > .monitor-actions {
+    grid-row: 1;
+    grid-column: 3;
+    justify-content: flex-end;
+    flex-shrink: 0;
+  }
+
+  .monitor-item > .monitor-status-bar {
+    grid-row: 3;
+    grid-column: 1 / -1;
+  }
+
   .monitor-info {
     min-width: 0;
     flex: 1;
   }
-  
+
   .monitor-name {
     font-size: 0.95rem;
     margin-bottom: 2px;
   }
-  
+
   .monitor-meta {
     font-size: 0.75rem;
     gap: 8px;
   }
-  
-  .monitor-stats {
-    grid-column: auto;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
+
+  /* 按钮与基础信息同一排，不单独占行 */
+  .monitor-actions {
+    justify-content: flex-end;
+    flex-shrink: 0;
+  }
+
+  .header-right {
+    gap: 6px;
+  }
+
+  /* 小屏顶部栏：仅显示图标，文字通过 title 提示 */
+  .header-nav-label {
+    display: none !important;
+  }
+
+  .btn-flat {
+    padding: 8px 10px;
+    min-width: 36px;
+    justify-content: center;
+  }
+
+  .btn-primary.btn-add-monitor {
+    padding: 8px 12px;
+    min-width: 36px;
+    justify-content: center;
+  }
+
+  .btn-primary.btn-add-monitor .btn-icon-inline {
+    margin: 0;
+  }
+
+  .btn-logout .btn-logout-icon {
+    display: block;
+  }
+
+  .user-menu {
+    margin-left: 4px;
+    padding-left: 10px;
     gap: 4px;
-    padding: 0;
-    border-top: none;
-    margin-top: 0;
-    flex-wrap: nowrap;
-    min-width: 80px;
   }
-  
-  .monitor-stat {
-    min-width: auto;
-    align-items: flex-end;
-    gap: 2px;
-  }
-  
-  .monitor-stat-label {
-    font-size: 0.65rem;
-    line-height: 1.2;
+
+  /* 小屏下保留完整「Xilore Uptime」 */
+  .logo .logo-text {
     white-space: nowrap;
   }
-  
-  .monitor-stat-label svg {
-    width: 12px;
-    height: 12px;
-  }
-  
-  .monitor-stat-value {
-    font-size: 0.75rem;
-    line-height: 1.2;
-    font-weight: 600;
-  }
-  
-  /* 小屏幕下隐藏"最后检测时间" */
-  .monitor-stat-last-check {
-    display: none;
-  }
-  
-  .monitor-actions {
-    grid-column: 1 / -1;
-    justify-content: flex-end;
-    padding-top: 8px;
-    border-top: 1px solid var(--border-color);
-    margin-top: 8px;
-  }
-  
-  .header-right {
-    gap: 8px;
-  }
-  
-  .btn-flat span,
-  .btn-primary span {
-    display: none;
-  }
-  
-  .user-menu span {
-    display: none;
-  }
-  
+
   .form-row {
     grid-template-columns: 1fr;
   }
@@ -1429,47 +1722,101 @@ body {
     grid-template-columns: 1fr 1fr;
     gap: 8px;
   }
-  
+
   .stat-card {
     padding: 12px 16px;
   }
-  
+
   .stat-value {
     font-size: 1.5rem;
   }
-  
+
   .main-content {
     padding: 16px;
   }
-  
+
   .top-header {
-    padding: 0 16px;
+    padding: 0 12px;
+    height: 52px;
   }
-  
+
+  /* 超小屏：logo 仅保留图标 */
+  .logo .logo-text {
+    display: none;
+  }
+
+  .logo {
+    gap: 0;
+  }
+
   .monitor-name {
     font-size: 0.9rem;
   }
-  
+
   .monitor-meta {
     font-size: 0.7rem;
   }
-  
-  .monitor-stats {
-    min-width: 60px;
-    gap: 4px;
+
+  /* 超小屏：操作 icon 单独一行 */
+  .monitor-item {
+    grid-template-columns: auto 1fr;
+    grid-template-rows: auto auto auto auto;
+    gap: 8px 12px;
   }
-  
-  .monitor-stat-label {
-    font-size: 0.6rem;
+
+  .monitor-item > .monitor-status {
+    grid-row: 1;
+    grid-column: 1;
   }
-  
-  .monitor-stat-value {
-    font-size: 0.7rem;
+
+  .monitor-item > .monitor-info {
+    grid-row: 1;
+    grid-column: 2;
+    min-width: 0;
+  }
+
+  .monitor-item > .monitor-actions {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+
+  .monitor-item > .monitor-stats {
+    grid-row: 3;
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+
+  .monitor-item > .monitor-status-bar {
+    grid-row: 4;
+    grid-column: 1 / -1;
+  }
+
+  /* 超小屏：操作按钮上方分割线 */
+  .monitor-item > .monitor-actions {
+    border-top: 1px solid var(--border-color);
+    padding-top: 8px;
+    margin-top: 4px;
+  }
+
+  /* 超小屏：信息标题只显示 icon，文字通过 title 提示 */
+  .monitor-stats .monitor-stat-label {
+    font-size: 0;
+    line-height: 0;
+  }
+
+  .monitor-stats .monitor-stat-label svg {
+    width: 14px;
+    height: 14px;
+    font-size: 14px;
+    display: inline-block;
+    vertical-align: middle;
   }
 }
 
-/* ============ 分组样式 ============ */
+/* ============ 14. 分组 ============ */
 .group-section {
+  --group-bar-width: 4px;
   margin-bottom: 16px;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
@@ -1486,7 +1833,7 @@ body {
   left: 0;
   top: 0;
   bottom: 0;
-  width: 4px;
+  width: var(--group-bar-width);
   background: var(--border-color);
   transition: background 0.2s;
 }
@@ -1532,8 +1879,8 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 14px 20px;
-  padding-left: 24px; /* 为状态条留出空间 */
+  /* 为状态条留出空间 */
+  padding: 14px 20px 14px 24px;
   background: transparent;
   cursor: pointer;
   transition: background 0.15s;
@@ -1633,7 +1980,7 @@ body {
   padding: 20px 24px;
 }
 
-/* ============ 设置模态框 ============ */
+/* ============ 15. 设置模态框 ============ */
 .modal-settings {
   max-width: 800px;
   width: 90%;
@@ -1728,7 +2075,7 @@ body {
   .settings-panel-container {
     flex-direction: column;
   }
-  
+
   .settings-menu {
     width: 100%;
     display: flex;
@@ -1738,7 +2085,7 @@ body {
     overflow-x: auto;
     overflow-y: hidden;
   }
-  
+
   .settings-menu-item {
     flex-shrink: 0;
     padding: 10px 16px;
@@ -1746,24 +2093,11 @@ body {
     border-bottom: 3px solid transparent;
     white-space: nowrap;
   }
-  
+
   .settings-menu-item.active {
     border-left: none;
     border-bottom-color: var(--accent);
   }
-}
-
-.settings-danger-zone {
-  margin-top: 32px;
-  padding-top: 24px;
-  border-top: 2px solid var(--border-color);
-}
-
-.danger-zone-header h3 {
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 20px;
 }
 
 .danger-action-wrapper {
@@ -2141,7 +2475,7 @@ body {
   margin: 0;
 }
 
-/* ============ 详情弹窗 ============ */
+/* ============ 16. 详情弹窗 ============ */
 .modal-detail {
   max-width: min(66vw, 1200px);
   width: 66vw;
@@ -2264,7 +2598,7 @@ body {
 .time-tab.active {
   background: var(--bg-white);
   color: var(--accent);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .detail-chart-container {
@@ -2369,7 +2703,7 @@ body {
   z-index: 10;
 }
 
-/* ============ 滚动条 ============ */
+/* --- 滚动条 --- */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -2388,7 +2722,7 @@ body {
   background: var(--ui-muted);
 }
 
-/* ============ 详情弹窗响应式 ============ */
+/* --- 详情弹窗响应式 --- */
 @media (max-width: 1024px) {
   .modal-detail {
     max-width: 90vw;
@@ -2402,19 +2736,19 @@ body {
     width: 95%;
     max-height: 95vh;
   }
-  
+
   .detail-info-grid {
     grid-template-columns: repeat(2, 1fr);
   }
-  
+
   .detail-chart-stats {
     grid-template-columns: repeat(2, 1fr);
   }
-  
+
   .time-range-tabs {
     flex-wrap: wrap;
   }
-  
+
   .detail-chart-header {
     flex-direction: column;
     align-items: flex-start;
@@ -2422,7 +2756,7 @@ body {
   }
 }
 
-/* ============ 图标样式 ============ */
+/* ============ 17. 图标与工具 ============ */
 .stat-icon,
 .detail-icon,
 .table-icon,
@@ -2457,7 +2791,8 @@ body {
   opacity: 1;
 }
 
-/* ============ 公开展示页页脚样式 ============ */
+/* ============ 18. 公开展示页 ============ */
+/* --- 页脚 --- */
 .public-footer {
   position: fixed;
   bottom: 0;
@@ -2520,21 +2855,21 @@ body {
   .public-footer {
     padding: 10px 16px;
   }
-  
+
   .public-footer-content {
     gap: 8px;
   }
-  
+
   .public-footer-icon {
     width: 18px;
     height: 18px;
   }
-  
+
   .public-footer-info {
     font-size: 0.8125rem;
     gap: 6px;
   }
-  
+
   .public-footer-author {
     font-size: 0.75rem;
   }
@@ -2544,12 +2879,12 @@ body {
   .public-footer {
     padding: 8px 12px;
   }
-  
+
   .public-footer-content {
     flex-direction: column;
     gap: 6px;
   }
-  
+
   .public-footer-info {
     flex-direction: column;
     gap: 4px;
@@ -2557,7 +2892,7 @@ body {
 }
 
 
-/* ============ 公开展示页头部样式 ============ */
+/* --- 头部 --- */
 .public-header {
   background: var(--bg-card);
   border-bottom: 1px solid var(--border-color);
@@ -2571,12 +2906,12 @@ body {
   color: var(--text-primary);
 }
 
-/* ============ 公开展示页容器样式 ============ */
+/* --- 容器 --- */
 .public-container {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 20px;
-  padding-bottom: 60px; /* 为页脚预留底部空间，避免内容被遮挡 */
+  /* 为页脚预留底部空间，避免内容被遮挡 */
+  padding: 20px 20px 60px;
 }
 
 @media (max-width: 768px) {
@@ -2591,7 +2926,7 @@ body {
   }
 }
 
-/* ============ 公开展示页统计卡片样式 ============ */
+/* --- 统计卡片 --- */
 .public-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -2636,11 +2971,4 @@ body {
 
 .public-stat-card.uptime .public-stat-value {
   color: #3b82f6;
-}
-
-/* 小屏幕下隐藏"最后检测时间" */
-@media (max-width: 768px) {
-  .monitor-stat-last-check {
-    display: none;
-  }
 }

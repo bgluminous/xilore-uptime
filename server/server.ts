@@ -5,6 +5,7 @@ import net from 'net';
 import { exec } from 'child_process';
 import http from 'http';
 import https from 'https';
+import tls from 'tls';
 import crypto from 'crypto';
 import mysql from 'mysql2/promise';
 import bcrypt from 'bcryptjs';
@@ -531,24 +532,27 @@ async function checkHttp(
     expectedStatus: number = 200,
     authUsername: string | null = null,
     authPassword: string | null = null
-): Promise<{ status: string; responseTime: number | null; message: string; statusCode?: number }> {
+): Promise<{ status: string; responseTime: number | null; message: string; statusCode?: number; ssl_days_remaining?: number | null }> {
   const timeout = timeoutSeconds * 1000;
-  const startTime = Date.now();
   const initialUrl = target.startsWith('http') ? target : `https://${target}`;
 
   // 支持跟随重定向的 HTTP 请求；优先使用 HEAD 减少流量，不支持时回退 GET
+  // 每次请求用本次开始时间计算 responseTime，避免 HEAD 回退 GET 时把两次往返时间累加导致延迟虚高
   const makeRequest = (url: string, redirectCount: number = 0, useHead: boolean = true): Promise<{
     status: string;
     responseTime: number | null;
     message: string;
-    statusCode?: number
+    statusCode?: number;
+    ssl_days_remaining?: number | null;
   }> => {
+    const requestStartTime = Date.now();
     return new Promise((resolve) => {
       if (redirectCount > 5) {
         resolve({
           status: 'down',
           responseTime: null,
-          message: '重定向次数过多'
+          message: '重定向次数过多',
+          ssl_days_remaining: null
         });
         return;
       }
@@ -561,7 +565,8 @@ async function checkHttp(
         resolve({
           status: 'down',
           responseTime: null,
-          message: `无效的 URL: ${err.message}`
+          message: `无效的 URL: ${err.message}`,
+          ssl_days_remaining: null
         });
         return;
       }
@@ -588,7 +593,7 @@ async function checkHttp(
       };
 
       const req = protocol.request(options, (res: http.IncomingMessage) => {
-        const responseTime = Date.now() - startTime;
+        const responseTime = Date.now() - requestStartTime;
 
         // 处理重定向 (301, 302, 303, 307, 308)
         if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
@@ -627,11 +632,27 @@ async function checkHttp(
         // 如果状态码不匹配期望值，不记录响应时间
         const shouldRecordTime = success;
 
+        // 根据实际连接是否为 TLS 读取证书剩余天数（不依赖 URL 字符串，重定向到 HTTPS 时也能正确识别）
+        let ssl_days_remaining: number | null = null;
+        if (res.socket && typeof (res.socket as tls.TLSSocket).getPeerCertificate === 'function') {
+          try {
+            const cert = (res.socket as tls.TLSSocket).getPeerCertificate();
+            if (cert && cert.valid_to) {
+              const validTo = new Date(cert.valid_to);
+              const now = new Date();
+              ssl_days_remaining = Math.floor((validTo.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+            }
+          } catch (_) {
+            // 忽略证书解析错误
+          }
+        }
+
         resolve({
           status: success ? 'up' : 'down',
           responseTime: shouldRecordTime ? responseTime : null,
           message: `HTTP ${res.statusCode}`,
-          statusCode: res.statusCode
+          statusCode: res.statusCode,
+          ssl_days_remaining
         });
         res.destroy();
       });
@@ -641,7 +662,8 @@ async function checkHttp(
         resolve({
           status: 'down',
           responseTime: null,
-          message: err.message
+          message: err.message,
+          ssl_days_remaining: null
         });
       });
 
@@ -651,7 +673,8 @@ async function checkHttp(
         resolve({
           status: 'down',
           responseTime: null,
-          message: '请求超时'
+          message: '请求超时',
+          ssl_days_remaining: null
         });
       });
 
@@ -990,8 +1013,8 @@ async function sendWebhookNotification(
   }
 }
 
-// 单次检测
-async function singleCheck(monitor: MonitorRow): Promise<{ status: string; responseTime: number | null; message: string }> {
+// 单次检测（HTTP 类型且为 HTTPS 时可能返回 ssl_days_remaining）
+async function singleCheck(monitor: MonitorRow): Promise<{ status: string; responseTime: number | null; message: string; ssl_days_remaining?: number | null }> {
   const timeout = monitor.timeout_seconds || 10;
   const expectedStatus = monitor.expected_status || 200;
 
@@ -1019,9 +1042,9 @@ async function singleCheck(monitor: MonitorRow): Promise<{ status: string; respo
 }
 
 // 带重试的检测
-async function performCheck(monitor: MonitorRow): Promise<{ status: string; responseTime: number | null; message: string }> {
+async function performCheck(monitor: MonitorRow): Promise<{ status: string; responseTime: number | null; message: string; ssl_days_remaining?: number | null }> {
   const maxRetries = Math.min(monitor.retries || 0, 3);
-  let result: { status: string; responseTime: number | null; message: string };
+  let result: { status: string; responseTime: number | null; message: string; ssl_days_remaining?: number | null };
   let attempt = 0;
   let retryCount = 0; // 实际重试次数
 
@@ -1050,11 +1073,19 @@ async function performCheck(monitor: MonitorRow): Promise<{ status: string; resp
   const oldStatus = oldMonitorRows.length > 0 ? oldMonitorRows[0].status : null;
 
   // 更新监控状态（超时时 responseTime 为 null）
-  // 注意：监控状态仍然使用原始的up/down，不使用warning
-  await execQuery(pool!,
-    'UPDATE monitors SET status = ?, last_check = NOW(), last_response_time = ? WHERE id = ?',
-    [result.status, result.responseTime || null, monitor.id]
-  );
+  // 仅当本次检测拿到证书天数（数字）时才更新 ssl_days_remaining，失败/超时/非 HTTPS 时保留原值，避免覆盖已有 SSL 信息
+  const hasNewSslDays = typeof result.ssl_days_remaining === 'number';
+  if (hasNewSslDays) {
+    await execQuery(pool!,
+      'UPDATE monitors SET status = ?, last_check = NOW(), last_response_time = ?, ssl_days_remaining = ? WHERE id = ?',
+      [result.status, result.responseTime || null, result.ssl_days_remaining, monitor.id]
+    );
+  } else {
+    await execQuery(pool!,
+      'UPDATE monitors SET status = ?, last_check = NOW(), last_response_time = ? WHERE id = ?',
+      [result.status, result.responseTime || null, monitor.id]
+    );
+  }
 
   // 检测状态变化，如果启用了邮件通知，则发送邮件
   if (monitor.email_notification && oldStatus !== result.status) {
@@ -1369,6 +1400,7 @@ app.get('/api/monitors', authMiddleware, async (req: Request, res: Response) => 
               status,
               last_check,
               last_response_time,
+              ssl_days_remaining,
               enabled,
               is_public,
               email_notification,
@@ -1462,6 +1494,7 @@ app.get('/api/monitors/:id', authMiddleware, async (req: Request, res: Response)
               status,
               last_check,
               last_response_time,
+              ssl_days_remaining,
               enabled,
               is_public,
               email_notification,
@@ -1696,6 +1729,7 @@ app.put('/api/monitors/:id', authMiddleware, async (req: Request, res: Response)
               status,
               last_check,
               last_response_time,
+              ssl_days_remaining,
               enabled,
               is_public,
               email_notification,

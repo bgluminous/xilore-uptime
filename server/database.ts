@@ -309,6 +309,21 @@ export async function initializeTables(pool: Pool): Promise<void> {
   }
 
   try {
+    const [columns] = await pool.execute(
+      "SHOW COLUMNS FROM monitors LIKE 'ssl_days_remaining'"
+    );
+    if (Array.isArray(columns) && columns.length === 0) {
+      await pool.execute(
+        "ALTER TABLE monitors ADD COLUMN ssl_days_remaining INT DEFAULT NULL AFTER last_response_time"
+      );
+      console.log("✓ 已添加 monitors.ssl_days_remaining 列");
+    }
+  } catch (e: unknown) {
+    const err = e as Error;
+    console.error("添加 monitors.ssl_days_remaining 列失败:", err.message);
+  }
+
+  try {
     const [tables] = await pool.execute("SHOW TABLES LIKE 'monitor_groups'");
     if (Array.isArray(tables) && tables.length === 0) {
       console.log("⚠ monitor_groups 表不存在，但应该已创建");

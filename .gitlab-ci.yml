@@ -17,4 +17,6 @@ build:
     - docker push $BASE_REPO_URL/$PROJECT_NAME:$VERSION
     - docker tag $BASE_REPO_URL/$PROJECT_NAME:$VERSION bgluminous/$PROJECT_NAME:$VERSION
     - docker push bgluminous/$PROJECT_NAME:$VERSION
+    - echo "清理已推送的镜像"
+    - docker rmi $BASE_REPO_URL/$PROJECT_NAME:$VERSION
     - docker rmi bgluminous/$PROJECT_NAME:$VERSION

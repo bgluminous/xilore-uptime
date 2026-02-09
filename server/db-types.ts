@@ -36,6 +36,8 @@ export interface MonitorRow {
   status?: 'up' | 'down' | 'unknown';
   last_check?: Date | string | null;
   last_response_time?: number | null;
+  /** HTTPS 证书剩余有效天数，仅 type=http 且目标为 https 时有值 */
+  ssl_days_remaining?: number | null;
   created_at?: Date | string;
   enabled?: number;
   is_public?: number;

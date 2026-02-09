@@ -43,7 +43,8 @@ const ICON_DEFS = {
   layers: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>',
   target: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
   settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6M5.64 5.64l4.24 4.24m4.24 4.24l4.24 4.24M1 12h6m6 0h6M5.64 18.36l4.24-4.24m4.24-4.24l4.24-4.24"/></svg>',
-  box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></svg>'
+  box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>'
 };
 
 // ============ 图标映射（使用引用避免重复）============
@@ -63,6 +64,7 @@ const icons = {
   timeout: ICON_DEFS.clock,
   retries: ICON_DEFS.refreshCw,
   lastCheck: ICON_DEFS.clock,
+  ssl: ICON_DEFS.lock,
 
   // 图表和记录
   chart: ICON_DEFS.barChart,
@@ -499,6 +501,7 @@ const app = {
     setIcon('detail-icon-timeout', icons.timeout);
     setIcon('detail-icon-retries', icons.retries);
     setIcon('detail-icon-last-check', icons.lastCheck);
+    setIcon('detail-icon-ssl', icons.ssl);
     setIcon('detail-icon-chart', icons.chart);
     setIcon('detail-icon-records', icons.records);
 
@@ -803,6 +806,19 @@ const app = {
     document.getElementById('detail-timeout').textContent = (monitor.timeout_seconds || 10) + ' 秒';
     document.getElementById('detail-retries').textContent = monitor.retries || 0;
     document.getElementById('detail-last-check').textContent = monitor.last_check ? this.formatFullTime(monitor.last_check) : '-';
+    const sslRow = document.getElementById('detail-ssl-days-row');
+    const sslVal = document.getElementById('detail-ssl-days');
+    if (monitor.ssl_days_remaining != null) {
+      sslRow.style.display = '';
+      sslVal.textContent = monitor.ssl_days_remaining > 0
+        ? '剩余 ' + monitor.ssl_days_remaining + ' 天'
+        : monitor.ssl_days_remaining === 0
+          ? '已过期'
+          : '已过期 ' + Math.abs(monitor.ssl_days_remaining) + ' 天';
+    } else {
+      sslRow.style.display = 'none';
+      sslVal.textContent = '-';
+    }
 
     // 刷新历史数据
     this.loadDetailData(this.currentDetailId).then(_r => {
@@ -897,8 +913,12 @@ const app = {
   getGroupStatus(monitors) {
     if (monitors.length === 0) return 'empty'; // 空分组 - 灰色或默认样式
 
-    const upCount = monitors.filter(m => m.status === 'up').length;
-    const totalCount = monitors.length;
+    // 只参与状态计算的监控（排除已暂停）
+    const active = monitors.filter(m => m.enabled !== 0 && m.enabled !== false);
+    if (active.length === 0) return 'empty'; // 全部暂停时按空分组显示
+
+    const upCount = active.filter(m => m.status === 'up').length;
+    const totalCount = active.length;
 
     if (upCount === totalCount) {
       return 'healthy'; // 全部正常 - 绿色
@@ -1073,11 +1093,17 @@ const app = {
           </div>
         </div>
         <div class="monitor-stats">
-          <div class="monitor-stat">
+          ${m.ssl_days_remaining != null
+            ? `<div class="monitor-stat monitor-stat-ssl">
+            <span class="monitor-stat-value">${m.ssl_days_remaining > 0 ? '剩余 ' + m.ssl_days_remaining + ' 天' : m.ssl_days_remaining === 0 ? '已过期' : '已过期 ' + Math.abs(m.ssl_days_remaining) + ' 天'}</span>
+            <span class="monitor-stat-label">${icons.ssl} SSL 证书</span>
+          </div>`
+            : '<div class="monitor-stat monitor-stat-ssl-placeholder"></div>'}
+          <div class="monitor-stat monitor-stat-response-time">
             <span class="monitor-stat-value">${m.last_response_time ? m.last_response_time + 'ms' : '-'}</span>
             <span class="monitor-stat-label">${icons.responseTime} 响应时间</span>
           </div>
-          <div class="monitor-stat">
+          <div class="monitor-stat monitor-stat-uptime">
             <span class="monitor-stat-value">${m.uptime_24h !== null && m.uptime_24h !== undefined ? m.uptime_24h.toFixed(2) + '%' : '-'}</span>
             <span class="monitor-stat-label">${icons.uptime || ''} 24小时可用率</span>
           </div>
@@ -1910,6 +1936,19 @@ const app = {
     document.getElementById('detail-timeout').textContent = (monitor.timeout_seconds || 10) + ' 秒';
     document.getElementById('detail-retries').textContent = monitor.retries || 0;
     document.getElementById('detail-last-check').textContent = monitor.last_check ? this.formatFullTime(monitor.last_check) : '-';
+    const sslRow = document.getElementById('detail-ssl-days-row');
+    const sslVal = document.getElementById('detail-ssl-days');
+    if (monitor.ssl_days_remaining != null) {
+      sslRow.style.display = '';
+      sslVal.textContent = monitor.ssl_days_remaining > 0
+        ? '剩余 ' + monitor.ssl_days_remaining + ' 天'
+        : monitor.ssl_days_remaining === 0
+          ? '已过期'
+          : '已过期 ' + Math.abs(monitor.ssl_days_remaining) + ' 天';
+    } else {
+      sslRow.style.display = 'none';
+      sslVal.textContent = '-';
+    }
 
     // 显示弹窗
     document.getElementById('detail-modal').classList.add('active');

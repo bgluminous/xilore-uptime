@@ -188,9 +188,13 @@ const publicApp = {
 
   getGroupStatus(monitors) {
     if (monitors.length === 0) return 'empty';
+ 
+    // 只参与状态计算的监控（排除已暂停）
+    const active = monitors.filter(m => m.enabled !== 0 && m.enabled !== false);
+    if (active.length === 0) return 'empty';
 
-    const upCount = monitors.filter(m => m.status === 'up').length;
-    const totalCount = monitors.length;
+    const upCount = active.filter(m => m.status === 'up').length;
+    const totalCount = active.length;
 
     if (upCount === totalCount) {
       return 'healthy';
@@ -340,6 +344,7 @@ const publicApp = {
       ? this.renderStatusBar24h(m.statusBar24h)
       : this.renderStatusBarSkeleton();
 
+    // 数据块 class 与管理页一致，便于共用样式（含暂停灰度、响应式等）；展示页不展示 SSL
     return `
       <div class="monitor-item ${statusClass}${isPaused ? ' paused' : ''}" data-id="${m.id}">
         <div class="monitor-status"></div>
@@ -347,11 +352,12 @@ const publicApp = {
           <div class="monitor-name">${this.escapeHtml(m.name)}${isPaused ? '<span class="monitor-paused-badge">已暂停</span>' : ''}</div>
         </div>
         <div class="monitor-stats">
-          <div class="monitor-stat">
+          <div class="monitor-stat monitor-stat-ssl-placeholder"></div>
+          <div class="monitor-stat monitor-stat-response-time">
             <span class="monitor-stat-value">${m.last_response_time ? m.last_response_time + 'ms' : '-'}</span>
             <span class="monitor-stat-label">${publicIcons.responseTime} 响应时间</span>
           </div>
-          <div class="monitor-stat">
+          <div class="monitor-stat monitor-stat-uptime">
             <span class="monitor-stat-value">${uptimeText}</span>
             <span class="monitor-stat-label">${publicIcons.uptime} 24小时可用率</span>
           </div>

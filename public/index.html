@@ -158,32 +158,33 @@
       <div class="header-left">
         <div class="logo">
           <img src="/favicon.png" alt="Xilore Uptime" width="24" height="24">
-          <span>Xilore Uptime</span>
+          <span class="logo-text"><span class="logo-brand">Xilore </span>Uptime</span>
         </div>
       </div>
       <div class="header-right">
-        <button class="btn-flat" onclick="app.refreshAll()" id="btn-refresh">
+        <button class="btn-flat" onclick="app.refreshAll()" id="btn-refresh" title="全部检测">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M23 4v6h-6M1 20v-6h6"/>
             <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
           </svg>
-          全部检测
+          <span class="header-nav-label">全部检测</span>
         </button>
         <button class="btn-flat" onclick="app.showGroupModal()" title="管理分组">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
           </svg>
-          分组
+          <span class="header-nav-label">分组</span>
         </button>
         <button class="btn-flat" onclick="app.showSettingsModal()" title="设置">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
             <path d="M12 1v6m0 6v6M5.64 5.64l4.24 4.24m4.24 4.24l4.24 4.24M1 12h6m6 0h6M5.64 18.36l4.24-4.24m4.24-4.24l4.24-4.24"/>
           </svg>
-          设置
+          <span class="header-nav-label">设置</span>
         </button>
-        <button class="btn-primary" onclick="app.showAddModal()">
-          <span class="btn-icon-inline" id="btn-icon-add"></span> 添加监控
+        <button class="btn-primary btn-add-monitor" onclick="app.showAddModal()" title="添加监控">
+          <span class="btn-icon-inline" id="btn-icon-add"></span>
+          <span class="header-nav-label">添加监控</span>
         </button>
         <button class="btn-theme" onclick="theme.toggle()" title="切换主题">
           <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -202,8 +203,15 @@
           </svg>
         </button>
         <div class="user-menu">
-          <span id="current-user">Admin</span>
-          <button class="btn-text" onclick="auth.logout()">退出</button>
+          <span id="current-user" class="header-nav-label">Admin</span>
+          <button class="btn-text btn-logout" onclick="auth.logout()" title="退出">
+            <svg class="btn-logout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
+              <polyline points="16 17 21 12 16 7"/>
+              <line x1="21" y1="12" x2="9" y2="12"/>
+            </svg>
+            <span class="header-nav-label">退出</span>
+          </button>
         </div>
       </div>
     </header>
@@ -230,7 +238,7 @@
         </div>
         <div class="stat-card uptime">
           <span class="stat-value" id="stat-uptime">-</span>
-          <span class="stat-label"><span class="stat-icon" id="stat-icon-uptime"></span> 24小时平均可用率</span>
+          <span class="stat-label"><span class="stat-icon" id="stat-icon-uptime"></span> 24小时平均</span>
         </div>
       </div>
       
@@ -405,6 +413,10 @@
           <div class="detail-info-item">
             <span class="detail-info-label"><span class="detail-icon" id="detail-icon-last-check"></span> 最后检测</span>
             <span class="detail-info-value" id="detail-last-check">-</span>
+          </div>
+          <div class="detail-info-item ssl-cert-only-desktop" id="detail-ssl-days-row" style="display: none;">
+            <span class="detail-info-label"><span class="detail-icon" id="detail-icon-ssl"></span> SSL 证书</span>
+            <span class="detail-info-value" id="detail-ssl-days">-</span>
           </div>
         </div>
         
