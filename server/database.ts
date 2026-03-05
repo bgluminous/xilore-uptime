@@ -1,4 +1,7 @@
-import mysql, {Pool, RowDataPacket} from "mysql2/promise";
+import mysql, { Pool, RowDataPacket } from "mysql2/promise";
+import { getLogger } from "xilore-log4js";
+
+const logger = getLogger("database");
 
 export interface DatabaseConfig {
   host: string;
@@ -81,6 +84,7 @@ export async function initializeTables(pool: Pool): Promise<void> {
           status             ENUM ('up', 'down', 'unknown') DEFAULT 'unknown',
           last_check         TIMESTAMP                    NULL,
           last_response_time INT,
+          ssl_days_remaining INT                            DEFAULT NULL,
           created_at         TIMESTAMP                      DEFAULT CURRENT_TIMESTAMP,
           enabled            TINYINT(1)                     DEFAULT 1,
           is_public          TINYINT(1)                     DEFAULT 0
@@ -125,7 +129,7 @@ export async function initializeTables(pool: Pool): Promise<void> {
 
   try {
     await pool.execute(alterHistoryTable);
-    console.log("✓ check_history表结构已更新，添加warning状态");
+    logger.info("✓ check_history表结构已更新，添加warning状态");
   } catch (e: unknown) {
     const err = e as Error;
     if (
@@ -133,7 +137,7 @@ export async function initializeTables(pool: Pool): Promise<void> {
       !err.message.includes("Duplicate") &&
       !err.message.includes("doesn't exist")
     ) {
-      console.error("更新check_history表结构失败:", err.message);
+      logger.error("更新check_history表结构失败:", err);
     }
   }
 
@@ -142,6 +146,7 @@ export async function initializeTables(pool: Pool): Promise<void> {
       "SHOW COLUMNS FROM monitors LIKE 'timeout_ms'"
     )) as [ColumnRow[], unknown];
     if (Array.isArray(columns) && columns.length > 0) {
+      // noinspection SqlResolve
       await pool.execute(
         "ALTER TABLE monitors CHANGE timeout_ms timeout_seconds INT DEFAULT 10"
       );
@@ -161,7 +166,7 @@ export async function initializeTables(pool: Pool): Promise<void> {
       await pool.execute(
         "ALTER TABLE monitors ADD COLUMN retries INT DEFAULT 0 AFTER timeout_seconds"
       );
-      console.log("✓ 已添加 retries 列");
+      logger.info("✓ 已添加 retries 列");
     }
   } catch {
     // 忽略迁移错误
@@ -175,10 +180,10 @@ export async function initializeTables(pool: Pool): Promise<void> {
       await pool.execute(
         "ALTER TABLE monitors ADD COLUMN email_notification TINYINT(1) DEFAULT 0 AFTER is_public"
       );
-      console.log("✓ 已添加 email_notification 列");
+      logger.info("✓ 已添加 email_notification 列");
     }
   } catch (e: unknown) {
-    console.error("添加 email_notification 列失败:", (e as Error).message);
+    logger.error("添加 email_notification 列失败:", e as Error);
   }
 
   try {
@@ -189,10 +194,10 @@ export async function initializeTables(pool: Pool): Promise<void> {
       await pool.execute(
         "ALTER TABLE monitors ADD COLUMN webhook_notification TINYINT(1) DEFAULT 0 AFTER email_notification"
       );
-      console.log("✓ 已添加 webhook_notification 列");
+      logger.info("✓ 已添加 webhook_notification 列");
     }
   } catch (e: unknown) {
-    console.error("添加 webhook_notification 列失败:", (e as Error).message);
+    logger.error("添加 webhook_notification 列失败:", e as Error);
   }
 
   try {
@@ -203,10 +208,10 @@ export async function initializeTables(pool: Pool): Promise<void> {
       await pool.execute(
         "ALTER TABLE monitors ADD COLUMN expected_status INT DEFAULT 200 AFTER retries"
       );
-      console.log("✓ 已添加 expected_status 列");
+      logger.info("✓ 已添加 expected_status 列");
     }
   } catch (e: unknown) {
-    console.error("添加 expected_status 列失败:", (e as Error).message);
+    logger.error("添加 expected_status 列失败:", e as Error);
   }
 
   try {
@@ -232,15 +237,15 @@ export async function initializeTables(pool: Pool): Promise<void> {
         `ALTER TABLE monitors
             ADD COLUMN group_id INT DEFAULT NULL AFTER ${afterColumn}`
       );
-      console.log(`✓ 已添加 group_id 列（位置：${afterColumn} 之后）`);
+      logger.info(`✓ 已添加 group_id 列（位置：${afterColumn} 之后）`);
     } else {
-      console.log("✓ group_id 列已存在");
+      logger.info("✓ group_id 列已存在");
     }
   } catch (e: unknown) {
     const err = e as Error;
-    console.error("添加 group_id 列失败:", err.message);
+    logger.error("添加 group_id 列失败:", err);
     if (err.message?.includes("Duplicate column name")) {
-      console.log("  (列已存在，忽略此错误)");
+      logger.info("  (列已存在，忽略此错误)");
     }
   }
 
@@ -252,12 +257,12 @@ export async function initializeTables(pool: Pool): Promise<void> {
       await pool.execute(
         "ALTER TABLE monitor_groups ADD COLUMN sort_order INT DEFAULT 0 AFTER description"
       );
-      console.log("✓ 已添加 monitor_groups.sort_order 列");
+      logger.info("✓ 已添加 monitor_groups.sort_order 列");
     } else {
-      console.log("✓ monitor_groups.sort_order 列已存在");
+      logger.info("✓ monitor_groups.sort_order 列已存在");
     }
   } catch (e: unknown) {
-    console.error("添加 monitor_groups.sort_order 列失败:", (e as Error).message);
+    logger.error("添加 monitor_groups.sort_order 列失败:", e as Error);
   }
 
   try {
@@ -268,12 +273,12 @@ export async function initializeTables(pool: Pool): Promise<void> {
       await pool.execute(
         "ALTER TABLE monitors ADD COLUMN is_public TINYINT(1) DEFAULT 0 AFTER enabled"
       );
-      console.log("✓ 已添加 monitors.is_public 列");
+      logger.info("✓ 已添加 monitors.is_public 列");
     } else {
-      console.log("✓ monitors.is_public 列已存在");
+      logger.info("✓ monitors.is_public 列已存在");
     }
   } catch (e: unknown) {
-    console.error("添加 monitors.is_public 列失败:", (e as Error).message);
+    logger.error("添加 monitors.is_public 列失败:", e as Error);
   }
 
   try {
@@ -284,12 +289,12 @@ export async function initializeTables(pool: Pool): Promise<void> {
       await pool.execute(
         "ALTER TABLE monitors ADD COLUMN auth_username VARCHAR(255) DEFAULT NULL AFTER is_public"
       );
-      console.log("✓ 已添加 auth_username 列");
+      logger.info("✓ 已添加 auth_username 列");
     } else {
-      console.log("✓ monitors.auth_username 列已存在");
+      logger.info("✓ monitors.auth_username 列已存在");
     }
   } catch (e: unknown) {
-    console.error("添加 monitors.auth_username 列失败:", (e as Error).message);
+    logger.error("添加 monitors.auth_username 列失败:", e as Error);
   }
 
   try {
@@ -300,39 +305,41 @@ export async function initializeTables(pool: Pool): Promise<void> {
       await pool.execute(
         "ALTER TABLE monitors ADD COLUMN auth_password VARCHAR(255) DEFAULT NULL AFTER auth_username"
       );
-      console.log("✓ 已添加 auth_password 列");
+      logger.info("✓ 已添加 auth_password 列");
     } else {
-      console.log("✓ monitors.auth_password 列已存在");
+      logger.info("✓ monitors.auth_password 列已存在");
     }
   } catch (e: unknown) {
-    console.error("添加 monitors.auth_password 列失败:", (e as Error).message);
+    logger.error("添加 monitors.auth_password 列失败:", e as Error);
   }
 
   try {
-    const [columns] = await pool.execute(
+    const [columns] = (await pool.execute(
       "SHOW COLUMNS FROM monitors LIKE 'ssl_days_remaining'"
-    );
+    )) as [ColumnRow[], unknown];
     if (Array.isArray(columns) && columns.length === 0) {
       await pool.execute(
         "ALTER TABLE monitors ADD COLUMN ssl_days_remaining INT DEFAULT NULL AFTER last_response_time"
       );
-      console.log("✓ 已添加 monitors.ssl_days_remaining 列");
+      logger.info("✓ 已添加 monitors.ssl_days_remaining 列");
+    } else {
+      logger.info("✓ monitors.ssl_days_remaining 列已存在");
     }
   } catch (e: unknown) {
     const err = e as Error;
-    console.error("添加 monitors.ssl_days_remaining 列失败:", err.message);
+    logger.error("添加 monitors.ssl_days_remaining 列失败:", err);
   }
 
   try {
     const [tables] = await pool.execute("SHOW TABLES LIKE 'monitor_groups'");
     if (Array.isArray(tables) && tables.length === 0) {
-      console.log("⚠ monitor_groups 表不存在，但应该已创建");
+      logger.warn("⚠ monitor_groups 表不存在，但应该已创建");
     } else {
-      console.log("✓ monitor_groups 表已存在");
+      logger.info("✓ monitor_groups 表已存在");
     }
   } catch (e: unknown) {
-    console.error("检查 monitor_groups 表失败:", (e as Error).message);
+    logger.error("检查 monitor_groups 表失败:", e as Error);
   }
 
-  console.log("数据表初始化完成");
+  logger.info("数据表初始化完成");
 }

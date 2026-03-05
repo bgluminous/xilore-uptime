@@ -6,12 +6,14 @@ import { exec } from 'child_process';
 import http from 'http';
 import https from 'https';
 import tls from 'tls';
+import dns from 'dns';
 import crypto from 'crypto';
 import mysql from 'mysql2/promise';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import nodemailer from 'nodemailer';
+import { getLogger } from 'xilore-log4js';
 import { connectDatabase, initializeTables } from './database';
 import type {
   MonitorRow,
@@ -25,6 +27,7 @@ import { URL } from "url";
 
 /** mysql2 execute 返回联合类型，统一断言为 [rows|result, fields] 便于使用 */
 async function execQuery(pool: Pool, sql: string, params?: any[]): Promise<[any, any]> {
+  // noinspection ES6MissingAwait
   return pool.execute(sql, params || []) as Promise<[any, any]>;
 }
 
@@ -82,28 +85,20 @@ function renderTemplate(filename: string, vars: Record<string, string | number |
   });
 }
 
-// ============ 日志工具 ============
-function log(level: string, message: string, data: object | null = null): void {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
-
-  if (data) {
-    console.log(logMessage, data);
-  } else {
-    console.log(logMessage);
-  }
-}
+// ============ 日志（xilore-log4js） ============
+const logger = getLogger('server');
 
 function logRequest(req: Request, res: Response, next: NextFunction): void {
   const start = Date.now();
 
   res.on('finish', () => {
     const duration = Date.now() - start;
-    const statusColor = res.statusCode >= 400 ? 'ERROR' : res.statusCode >= 300 ? 'WARN' : 'INFO';
-    log(statusColor, `${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`, {
-      ip: req.ip || req.socket?.remoteAddress,
-      userAgent: req.get('user-agent')
-    });
+    const msg = `${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`;
+    const data = { ip: req.ip || req.socket?.remoteAddress, userAgent: req.get('user-agent') };
+    const full = `${msg} ${JSON.stringify(data)}`;
+    if (res.statusCode >= 400) logger.error(full);
+    else if (res.statusCode >= 300) logger.warn(full);
+    else logger.info(full);
   });
 
   next();
@@ -123,13 +118,13 @@ function loadConfig(): boolean {
   try {
     if (fs.existsSync(CONFIG_PATH)) {
       config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8')) as AppConfig;
-      log('INFO', '配置文件加载成功');
+      logger.info('配置文件加载成功');
       return true;
     } else {
-      log('INFO', '配置文件不存在，等待初始化');
+      logger.info('配置文件不存在，等待初始化');
     }
   } catch (e) {
-    log('ERROR', '加载配置失败', {error: e.message});
+    logger.error(`加载配置失败 ${JSON.stringify({error: e.message})}`);
   }
   return false;
 }
@@ -181,7 +176,7 @@ async function isInitialized() {
     try {
       await connectDatabaseWrapper();
     } catch (e) {
-      log('WARN', '数据库连接失败，系统未初始化', {error: e.message});
+      logger.warn(`数据库连接失败，系统未初始化 ${JSON.stringify({error: e.message})}`);
       return false;
     }
   }
@@ -192,7 +187,7 @@ async function isInitialized() {
     const adminCount = rows[0].count;
     return adminCount > 0;
   } catch (e) {
-    log('WARN', '检查初始化状态失败', {error: e.message});
+    logger.warn(`检查初始化状态失败 ${JSON.stringify({error: e.message})}`);
     return false;
   }
 }
@@ -250,7 +245,7 @@ async function initCheckMiddleware(req: Request, res: Response, next: NextFuncti
     next();
   } catch (error: unknown) {
     // 如果检查初始化状态失败，也视为未初始化
-    log('WARN', '检查初始化状态失败', {error: (error as Error).message, path: req.path});
+    logger.warn(`检查初始化状态失败 ${JSON.stringify({error: (error as Error).message, path: req.path})}`);
 
     if (req.path.startsWith('/api')) {
       res.status(400).json({error: '系统未初始化，请访问 /setup 进行初始化'});
@@ -267,7 +262,7 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   const token = req.cookies.token || req.headers.authorization?.replace('Bearer ', '');
 
   if (!token) {
-    log('WARN', '未授权访问', {path: req.path, method: req.method});
+    logger.warn(`未授权访问 ${JSON.stringify({path: req.path, method: req.method})}`);
     res.status(401).json({error: '未登录'});
     return;
   }
@@ -276,7 +271,7 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
     req.user = jwt.verify(token, getJWTSecret()) as { id: number; username: string; role: string };
     next();
   } catch (e) {
-    log('WARN', 'Token 验证失败', {path: req.path, error: (e as Error).message});
+    logger.warn(`Token 验证失败 ${JSON.stringify({path: req.path, error: (e as Error).message})}`);
     res.status(401).json({error: '登录已过期'});
     return;
   }
@@ -301,7 +296,7 @@ app.post('/api/install/test-db', async (req: Request, res: Response) => {
     }
   } catch (error) {
     // 如果检查失败，继续执行（可能是未初始化状态）
-    log('WARN', '检查初始化状态失败', {error: error.message});
+    logger.warn(`检查初始化状态失败 ${JSON.stringify({error: error.message})}`);
   }
 
   const {host, port, user, password, name} = req.body;
@@ -373,7 +368,7 @@ app.post('/api/install/complete', async (req: Request, res: Response) => {
     }
   } catch (error) {
     // 如果检查失败，继续执行（可能是未初始化状态）
-    log('WARN', '检查初始化状态失败', {error: error.message});
+    logger.warn(`检查初始化状态失败 ${JSON.stringify({error: error.message})}`);
   }
 
   const {database, admin, skipAdmin} = req.body;
@@ -398,7 +393,7 @@ app.post('/api/install/complete', async (req: Request, res: Response) => {
     let jwtSecret = process.env.JWT_SECRET;
     if (!jwtSecret) {
       jwtSecret = generateJWTSecret();
-      log('INFO', '已自动生成 JWT 密钥并保存到配置文件');
+      logger.info('已自动生成 JWT 密钥并保存到配置文件');
     }
 
     // 保存配置
@@ -446,7 +441,7 @@ app.post('/api/install/complete', async (req: Request, res: Response) => {
       }
     } catch (cleanupError) {
       // 清理失败不影响错误响应
-      log('WARN', '清理配置文件失败', {error: cleanupError.message});
+      logger.warn(`清理配置文件失败 ${JSON.stringify({error: cleanupError.message})}`);
     }
     config = null;
     pool = null;
@@ -458,14 +453,14 @@ app.post('/api/install/complete', async (req: Request, res: Response) => {
 // ============ 认证路由 ============
 app.post('/api/auth/login', async (req: Request, res: Response) => {
   if (!isInstalled()) {
-    log('WARN', '登录尝试 - 系统未安装');
+    logger.warn('登录尝试 - 系统未安装');
     return res.status(400).json({error: '系统未安装'});
   }
 
   const {username, password} = req.body;
 
   if (!username || !password) {
-    log('WARN', '登录尝试 - 缺少用户名或密码');
+    logger.warn('登录尝试 - 缺少用户名或密码');
     return res.status(400).json({error: '请输入用户名和密码'});
   }
 
@@ -476,7 +471,7 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     );
 
     if (rows.length === 0) {
-      log('WARN', '登录失败 - 用户不存在', {username});
+      logger.warn(`登录失败 - 用户不存在 ${JSON.stringify({username})}`);
       return res.status(401).json({error: '用户名或密码错误'});
     }
 
@@ -484,7 +479,7 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     const validPassword = await bcrypt.compare(password, user.password);
 
     if (!validPassword) {
-      log('WARN', '登录失败 - 密码错误', {username});
+      logger.warn(`登录失败 - 密码错误 ${JSON.stringify({username})}`);
       return res.status(401).json({error: '用户名或密码错误'});
     }
 
@@ -500,7 +495,7 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       sameSite: 'lax'
     });
 
-    log('INFO', '用户登录成功', {username: user.username, userId: user.id, role: user.role});
+    logger.info(`用户登录成功 ${JSON.stringify({username: user.username, userId: user.id, role: user.role})}`);
 
     res.json({
       success: true,
@@ -511,7 +506,7 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       }
     });
   } catch (e) {
-    log('ERROR', '登录过程出错', {username, error: e.message});
+    logger.error(`登录过程出错 ${JSON.stringify({username, error: e.message})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -561,7 +556,7 @@ async function checkHttp(
       try {
         parsedUrl = new URL(url);
       } catch (err) {
-        log('ERROR', 'URL解析失败', {url, error: err.message, redirectCount});
+        logger.error(`URL解析失败 ${JSON.stringify({url, error: err.message, redirectCount})}`);
         resolve({
           status: 'down',
           responseTime: null,
@@ -572,6 +567,34 @@ async function checkHttp(
       }
 
       const protocol = parsedUrl.protocol === 'https:' ? https : http;
+
+      // 额外做一次独立的 DNS 解析用于观测 DNS 延迟（不参与 responseTime 统计）
+      // 为了避免阻塞请求本身，这里不等待解析结果，仅在解析完成后按需输出日志
+      try {
+        const dnsStart = Date.now();
+        dns.lookup(parsedUrl.hostname, (dnsErr) => {
+          const dnsTime = Date.now() - dnsStart;
+          if (dnsErr) {
+            logger.warn(`DNS 解析失败（独立检测） ${JSON.stringify({
+              host: parsedUrl.hostname,
+              error: dnsErr.message
+            })}`);
+            return;
+          }
+          // 只在 DNS 明显偏慢时打印，避免日志过多；阈值可根据需要调整
+          if (dnsTime > 100) {
+            logger.warn(`DNS 解析耗时（独立检测） ${JSON.stringify({
+              host: parsedUrl.hostname,
+              dnsTimeMs: dnsTime
+            })}`);
+          }
+        });
+      } catch (e) {
+        logger.warn(`DNS 解析监控异常（独立检测） ${JSON.stringify({
+          host: parsedUrl.hostname,
+          error: (e as Error).message
+        })}`);
+      }
 
       const headers = {
         'User-Agent': 'Xilore UptimeBot/1.0'
@@ -797,7 +820,7 @@ async function sendEmailNotification(
       ['smtpHost', 'smtpPort', 'smtpUser', 'smtpPassword', 'smtpFrom', 'smtpSecure']);
 
     if (smtpRows.length === 0 || !smtpRows.find((r: SettingsRow) => r.key_name === 'smtpHost' && r.value)) {
-      log('WARN', '邮件配置未设置，跳过发送', {monitorId: monitor.id});
+      logger.warn(`邮件配置未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
       return;
     }
 
@@ -814,14 +837,14 @@ async function sendEmailNotification(
     });
 
     if (!config.host || !config.user || !config.password || !config.from) {
-      log('WARN', '邮件配置不完整，跳过发送', {monitorId: monitor.id});
+      logger.warn(`邮件配置不完整，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
       return;
     }
 
     // 获取管理员邮箱
     const [userRows] = await execQuery(pool!, 'SELECT email FROM users WHERE role = ? LIMIT 1', ['admin']);
     if (userRows.length === 0 || !userRows[0].email) {
-      log('WARN', '管理员邮箱未设置，跳过发送', {monitorId: monitor.id});
+      logger.warn(`管理员邮箱未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
       return;
     }
 
@@ -879,9 +902,9 @@ async function sendEmailNotification(
       html: html
     });
 
-    log('INFO', '邮件通知发送成功', {monitorId: monitor.id, to: toEmail});
+    logger.info(`邮件通知发送成功 ${JSON.stringify({monitorId: monitor.id, to: toEmail})}`);
   } catch (error) {
-    log('ERROR', '发送邮件通知失败', {monitorId: monitor.id, error: error.message});
+    logger.error(`发送邮件通知失败 ${JSON.stringify({monitorId: monitor.id, error: error.message})}`);
     throw error;
   }
 }
@@ -902,7 +925,7 @@ async function sendWebhookNotification(
     );
 
     if (webhookRows.length === 0 || !webhookRows.find((r: SettingsRow) => r.key_name === 'webhookUrl' && r.value)) {
-      log('WARN', 'Webhook 配置未设置，跳过发送', {monitorId: monitor.id});
+      logger.warn(`Webhook 配置未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
       return;
     }
 
@@ -922,7 +945,7 @@ async function sendWebhookNotification(
     });
 
     if (!config.url) {
-      log('WARN', 'Webhook URL 未设置，跳过发送', {monitorId: monitor.id});
+      logger.warn(`Webhook URL 未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
       return;
     }
 
@@ -946,7 +969,7 @@ async function sendWebhookNotification(
       status: {
         old: oldStatus || 'unknown',
         new: newStatus,
-        text: newStatus === 'up' ? '在线' : '离线'
+        text: newStatus === 'up' ? '在线' : newStatus === 'warning' ? '警告' : '离线'
       },
       check: {
         responseTime: responseTime,
@@ -976,27 +999,27 @@ async function sendWebhookNotification(
         });
         res.on('end', () => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
-            log('INFO', 'Webhook 通知发送成功', {monitorId: monitor.id, statusCode: res.statusCode});
+            logger.info(`Webhook 通知发送成功 ${JSON.stringify({monitorId: monitor.id, statusCode: res.statusCode})}`);
             resolve(undefined);
           } else {
-            log('WARN', 'Webhook 通知返回非成功状态码', {
+            logger.warn(`Webhook 通知返回非成功状态码 ${JSON.stringify({
               monitorId: monitor.id,
               statusCode: res.statusCode
-            });
+            })}`);
             resolve(undefined); // 不抛出错误，只记录警告
           }
         });
       });
 
       req.on('error', (err: Error) => {
-        log('ERROR', 'Webhook 请求失败', {monitorId: monitor.id, error: err.message});
+        logger.error(`Webhook 请求失败 ${JSON.stringify({monitorId: monitor.id, error: err.message})}`);
         reject(err);
       });
 
       req.setTimeout(10000); // 10秒超时
       req.on('timeout', () => {
         req.destroy();
-        log('ERROR', 'Webhook 请求超时', {monitorId: monitor.id});
+        logger.error(`Webhook 请求超时 ${JSON.stringify({monitorId: monitor.id})}`);
         reject(new Error('Request timeout'));
       });
 
@@ -1008,7 +1031,7 @@ async function sendWebhookNotification(
     });
 
   } catch (error) {
-    log('ERROR', '发送 Webhook 通知失败', {monitorId: monitor.id, error: error.message});
+    logger.error(`发送 Webhook 通知失败 ${JSON.stringify({monitorId: monitor.id, error: error.message})}`);
     throw error;
   }
 }
@@ -1019,7 +1042,7 @@ async function singleCheck(monitor: MonitorRow): Promise<{ status: string; respo
   const expectedStatus = monitor.expected_status || 200;
 
   // 调试：打印检测参数
-  log('DEBUG', '执行检测', {
+  logger.debug(`执行检测 ${JSON.stringify({
     id: monitor.id,
     name: monitor.name,
     type: monitor.type,
@@ -1027,7 +1050,7 @@ async function singleCheck(monitor: MonitorRow): Promise<{ status: string; respo
     targetType: typeof monitor.target,
     timeout,
     expectedStatus
-  });
+  })}`);
 
   switch (monitor.type) {
     case 'http':
@@ -1087,19 +1110,25 @@ async function performCheck(monitor: MonitorRow): Promise<{ status: string; resp
     );
   }
 
-  // 检测状态变化，如果启用了邮件通知，则发送邮件
-  if (monitor.email_notification && oldStatus !== result.status) {
+  // 检测状态变化，如果启用了邮件通知，则发送邮件（警告状态不发邮件）
+  if (monitor.email_notification && oldStatus !== result.status && historyStatus !== 'warning') {
     // 异步发送邮件，不阻塞检测流程
     sendEmailNotification(monitor, oldStatus, result.status, result.message, result.responseTime).catch((err: Error) => {
-      log('ERROR', '发送邮件通知失败', {monitorId: monitor.id, error: err.message});
+      logger.error(`发送邮件通知失败 ${JSON.stringify({monitorId: monitor.id, error: err.message})}`);
     });
   }
 
-  // 检测状态变化，如果启用了 Webhook 通知，则发送 Webhook
-  if (monitor.webhook_notification && oldStatus !== result.status) {
-    sendWebhookNotification(monitor, oldStatus, result.status, result.message, result.responseTime).catch((err: Error) => {
-      log('ERROR', '发送 Webhook 通知失败', {monitorId: monitor.id, error: err.message});
-    });
+  // 检测状态变化或出现警告状态时，如果启用了 Webhook 通知，则发送 Webhook（警告状态也发）
+  if (monitor.webhook_notification) {
+    if (historyStatus === 'warning') {
+      sendWebhookNotification(monitor, oldStatus, 'warning', result.message, result.responseTime).catch((err: Error) => {
+        logger.error(`发送 Webhook 通知失败 ${JSON.stringify({monitorId: monitor.id, error: err.message})}`);
+      });
+    } else if (oldStatus !== result.status) {
+      sendWebhookNotification(monitor, oldStatus, result.status, result.message, result.responseTime).catch((err: Error) => {
+        logger.error(`发送 Webhook 通知失败 ${JSON.stringify({monitorId: monitor.id, error: err.message})}`);
+      });
+    }
   }
 
   // 记录历史（超时时 responseTime 为 null）
@@ -1117,14 +1146,14 @@ async function performCheck(monitor: MonitorRow): Promise<{ status: string; resp
 
   // 记录检测结果（仅在状态变化或错误时记录详细信息）
   if (result.status === 'down' || cleanupResult.affectedRows > 0) {
-    log('INFO', '监控检测完成', {
+    logger.info(`监控检测完成 ${JSON.stringify({
       monitorId: monitor.id,
       name: monitor.name,
       status: result.status,
       responseTime: result.responseTime,
       message: result.message,
       cleanedRecords: cleanupResult.affectedRows
-    });
+    })}`);
   }
 
   return result;
@@ -1142,7 +1171,7 @@ app.get('/api/groups', authMiddleware, async (req: Request, res: Response) => {
       sort_order: r.sort_order ?? 0
     })));
   } catch (e: unknown) {
-    log('ERROR', 'API 错误', {path: req.path, method: req.method, error: (e as Error).message, user: req.user?.username});
+    logger.error(`API 错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1151,7 +1180,7 @@ app.post('/api/groups', authMiddleware, async (req: Request, res: Response) => {
   const {name, description} = req.body;
 
   if (!name) {
-    log('WARN', '创建分组失败 - 名称为空', {user: req.user?.username});
+    logger.warn(`创建分组失败 - 名称为空 ${JSON.stringify({user: req.user?.username})}`);
     return res.status(400).json({error: '分组名称不能为空'});
   }
 
@@ -1163,7 +1192,7 @@ app.post('/api/groups', authMiddleware, async (req: Request, res: Response) => {
     );
 
     if (existing.length > 0) {
-      log('WARN', '创建分组失败 - 名称重复', {name, user: req.user?.username});
+      logger.warn(`创建分组失败 - 名称重复 ${JSON.stringify({name, user: req.user?.username})}`);
       return res.status(400).json({error: '分组名称已存在'});
     }
 
@@ -1173,11 +1202,11 @@ app.post('/api/groups', authMiddleware, async (req: Request, res: Response) => {
       'INSERT INTO monitor_groups (name, description, sort_order) VALUES (?, ?, ?)',
       [name, description || null, nextOrder]
     );
-    log('INFO', '创建分组成功', {groupId: result.insertId, name, user: req.user?.username});
+    logger.info(`创建分组成功 ${JSON.stringify({groupId: result.insertId, name, user: req.user?.username})}`);
     // 返回最小必要字段
     res.json({id: result.insertId, name, sort_order: nextOrder});
   } catch (e) {
-    log('ERROR', '创建分组失败', {name, error: e.message, user: req.user?.username});
+    logger.error(`创建分组失败 ${JSON.stringify({name, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1195,7 +1224,7 @@ app.put('/api/groups/:id', authMiddleware, async (req: Request, res: Response) =
       );
 
       if (existing.length > 0) {
-        log('WARN', '更新分组失败 - 名称重复', {groupId: id, name, user: req.user?.username});
+        logger.warn(`更新分组失败 - 名称重复 ${JSON.stringify({groupId: id, name, user: req.user?.username})}`);
         return res.status(400).json({error: '分组名称已存在'});
       }
     }
@@ -1240,14 +1269,14 @@ app.put('/api/groups/:id', authMiddleware, async (req: Request, res: Response) =
     // 返回更新后的分组信息
     const [updated] = await execQuery(pool!,'SELECT id, name, sort_order FROM monitor_groups WHERE id = ?', [id]);
 
-    log('INFO', '更新分组成功', {groupId: id, name, sort_order, user: req.user?.username});
+    logger.info(`更新分组成功 ${JSON.stringify({groupId: id, name, sort_order, user: req.user?.username})}`);
     res.json(updated[0] ? {
       id: updated[0].id,
       name: updated[0].name,
       sort_order: updated[0].sort_order ?? 0
     } : null);
   } catch (e) {
-    log('ERROR', '更新分组失败', {groupId: id, error: e.message, user: req.user?.username});
+    logger.error(`更新分组失败 ${JSON.stringify({groupId: id, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1259,14 +1288,14 @@ app.delete('/api/groups/:id', authMiddleware, async (req: Request, res: Response
     // 将该分组下的监控移到"未分组"
     const [updateResult] = await execQuery(pool!,'UPDATE monitors SET group_id = NULL WHERE group_id = ?', [id]);
     await execQuery(pool!,'DELETE FROM monitor_groups WHERE id = ?', [id]);
-    log('INFO', '删除分组成功', {
+    logger.info(`删除分组成功 ${JSON.stringify({
       groupId: id,
       affectedMonitors: updateResult.affectedRows,
       user: req.user?.username
-    });
+    })}`);
     res.json({success: true});
   } catch (e) {
-    log('ERROR', '删除分组失败', {groupId: id, error: e.message, user: req.user?.username});
+    logger.error(`删除分组失败 ${JSON.stringify({groupId: id, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1446,7 +1475,7 @@ app.get('/api/monitors', authMiddleware, async (req: Request, res: Response) => 
 
     res.json(monitorsWithUptime);
   } catch (e: unknown) {
-    log('ERROR', 'API 错误', {path: req.path, method: req.method, error: (e as Error).message, user: req.user?.username});
+    logger.error(`API 错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1473,7 +1502,7 @@ app.get('/api/monitors/statusbars', authMiddleware, async (req: Request, res: Re
 
     res.json(buildStatusBars24h(ids, historyRows));
   } catch (e) {
-    log('ERROR', 'API 错误', {path: req.path, method: req.method, error: e.message, user: req.user?.username});
+    logger.error(`API 错误 ${JSON.stringify({path: req.path, method: req.method, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1513,7 +1542,7 @@ app.get('/api/monitors/:id', authMiddleware, async (req: Request, res: Response)
       auth_password_set: rows[0].auth_password_set === 1 || rows[0].auth_password_set === true
     });
   } catch (e) {
-    log('ERROR', 'API 错误', {path: req.path, method: req.method, error: e.message, user: req.user?.username});
+    logger.error(`API 错误 ${JSON.stringify({path: req.path, method: req.method, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1586,21 +1615,21 @@ app.post('/api/monitors', authMiddleware, async (req: Request, res: Response) =>
       startMonitorCheck(rows[0]);
     }
 
-    log('INFO', '创建监控成功', {
+    logger.info(`创建监控成功 ${JSON.stringify({
       monitorId: result.insertId,
       name,
       type,
       target,
       groupId: group_id || null,
       user: req.user?.username
-    });
+    })}`);
 
     res.status(201).json(rows[0] ? {
       ...rows[0],
       auth_password_set: rows[0].auth_password_set === 1 || rows[0].auth_password_set === true
     } : null);
   } catch (e) {
-    log('ERROR', '创建监控失败', {name, type, target, error: e.message, user: req.user?.username});
+    logger.error(`创建监控失败 ${JSON.stringify({name, type, target, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1745,20 +1774,20 @@ app.put('/api/monitors/:id', authMiddleware, async (req: Request, res: Response)
       startMonitorCheck(rows[0]);
     }
 
-    log('INFO', '更新监控成功', {
+    logger.info(`更新监控成功 ${JSON.stringify({
       monitorId: id,
       name: name || '未更改',
       type: type || '未更改',
       groupId: validGroupId,
       user: req.user?.username
-    });
+    })}`);
 
     res.json(rows[0] ? {
       ...rows[0],
       auth_password_set: rows[0].auth_password_set === 1 || rows[0].auth_password_set === true
     } : null);
   } catch (e) {
-    log('ERROR', '更新监控失败', {monitorId: id, error: e.message, user: req.user?.username});
+    logger.error(`更新监控失败 ${JSON.stringify({monitorId: id, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1772,23 +1801,23 @@ app.delete('/api/monitors/:id', authMiddleware, async (req: Request, res: Respon
     if (checkIntervals.has(id)) {
       clearInterval(checkIntervals.get(id));
       checkIntervals.delete(id);
-      log('INFO', '停止监控任务', {monitorId: id});
+      logger.info(`停止监控任务 ${JSON.stringify({monitorId: id})}`);
     }
 
     // 删除监控时，同时删除相关的历史记录
     await execQuery(pool!,'DELETE FROM check_history WHERE monitor_id = ?', [id]);
     await execQuery(pool!,'DELETE FROM monitors WHERE id = ?', [id]);
 
-    log('INFO', '删除监控成功', {
+    logger.info(`删除监控成功 ${JSON.stringify({
       monitorId: id,
       name: monitor[0]?.name || '未知',
       type: monitor[0]?.type || '未知',
       user: req.user?.username
-    });
+    })}`);
 
     res.json({success: true});
   } catch (e) {
-    log('ERROR', '删除监控失败', {monitorId: id, error: e.message, user: req.user?.username});
+    logger.error(`删除监控失败 ${JSON.stringify({monitorId: id, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1798,28 +1827,28 @@ app.post('/api/monitors/:id/check', authMiddleware, async (req: Request, res: Re
   try {
     const [rows] = await execQuery(pool!,'SELECT * FROM monitors WHERE id = ?', [id]);
     if (rows.length === 0) {
-      log('WARN', '手动检测失败 - 监控不存在', {monitorId: id, user: req.user?.username});
+      logger.warn(`手动检测失败 - 监控不存在 ${JSON.stringify({monitorId: id, user: req.user?.username})}`);
       return res.status(404).json({error: '监控不存在'});
     }
 
-    log('INFO', '开始手动检测', {
+    logger.info(`开始手动检测 ${JSON.stringify({
       monitorId: id,
       name: rows[0].name,
       target: rows[0].target,
       user: req.user?.username
-    });
+    })}`);
     const result = await performCheck(rows[0]);
-    log('INFO', '手动检测完成', {
+    logger.info(`手动检测完成 ${JSON.stringify({
       monitorId: id,
       name: rows[0].name,
       status: result.status,
       responseTime: result.responseTime,
       user: req.user?.username
-    });
+    })}`);
 
     res.json(result);
   } catch (e) {
-    log('ERROR', '手动检测失败', {monitorId: id, error: e.message, user: req.user?.username});
+    logger.error(`手动检测失败 ${JSON.stringify({monitorId: id, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1829,21 +1858,21 @@ app.delete('/api/monitors/:id/history', authMiddleware, async (req: Request, res
   try {
     const [rows] = await execQuery(pool!,'SELECT * FROM monitors WHERE id = ?', [id]);
     if (rows.length === 0) {
-      log('WARN', '清空历史失败 - 监控不存在', {monitorId: id, user: req.user?.username});
+      logger.warn(`清空历史失败 - 监控不存在 ${JSON.stringify({monitorId: id, user: req.user?.username})}`);
       return res.status(404).json({error: '监控不存在'});
     }
 
     const [deleteResult] = await execQuery(pool!,'DELETE FROM check_history WHERE monitor_id = ?', [id]);
-    log('INFO', '清空监控历史成功', {
+    logger.info(`清空监控历史成功 ${JSON.stringify({
       monitorId: id,
       name: rows[0].name,
       deletedRecords: deleteResult.affectedRows,
       user: req.user?.username
-    });
+    })}`);
 
     res.json({success: true});
   } catch (e) {
-    log('ERROR', '清空监控历史失败', {monitorId: id, error: e.message, user: req.user?.username});
+    logger.error(`清空监控历史失败 ${JSON.stringify({monitorId: id, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1855,29 +1884,29 @@ app.delete('/api/monitors/:id/history/:historyId', authMiddleware, async (req: R
     // 验证监控是否存在
     const [monitorRows] = await execQuery(pool!,'SELECT * FROM monitors WHERE id = ?', [monitorId]);
     if (monitorRows.length === 0) {
-      log('WARN', '删除历史记录失败 - 监控不存在', {monitorId, historyId, user: req.user?.username});
+      logger.warn(`删除历史记录失败 - 监控不存在 ${JSON.stringify({monitorId, historyId, user: req.user?.username})}`);
       return res.status(404).json({error: '监控不存在'});
     }
 
     // 验证历史记录是否存在且属于该监控
     const [historyRows] = await execQuery(pool!,'SELECT * FROM check_history WHERE id = ? AND monitor_id = ?', [historyId, monitorId]);
     if (historyRows.length === 0) {
-      log('WARN', '删除历史记录失败 - 记录不存在', {monitorId, historyId, user: req.user?.username});
+      logger.warn(`删除历史记录失败 - 记录不存在 ${JSON.stringify({monitorId, historyId, user: req.user?.username})}`);
       return res.status(404).json({error: '历史记录不存在'});
     }
 
     // 删除历史记录
     await execQuery(pool!,'DELETE FROM check_history WHERE id = ? AND monitor_id = ?', [historyId, monitorId]);
-    log('INFO', '删除历史记录成功', {
+    logger.info(`删除历史记录成功 ${JSON.stringify({
       monitorId,
       historyId,
       name: monitorRows[0].name,
       user: req.user?.username
-    });
+    })}`);
 
     res.json({success: true});
   } catch (e) {
-    log('ERROR', '删除历史记录失败', {monitorId, historyId, error: e.message, user: req.user?.username});
+    logger.error(`删除历史记录失败 ${JSON.stringify({monitorId, historyId, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -1887,14 +1916,14 @@ app.delete('/api/history/all', authMiddleware, async (req: Request, res: Respons
   try {
     // 使用 TRUNCATE 释放表空间（比 DELETE 更适合“全清空”）
     await execQuery(pool!,'TRUNCATE TABLE check_history');
-    log('INFO', '清空所有检测历史成功(TRUNCATE)', {
+    logger.info(`清空所有检测历史成功(TRUNCATE) ${JSON.stringify({
       user: req.user?.username
-    });
+    })}`);
 
     // TRUNCATE 不返回 affectedRows，这里统一返回 success
     res.json({success: true});
   } catch (e) {
-    log('ERROR', '删除所有检测历史失败', {error: e.message, user: req.user?.username});
+    logger.error(`删除所有检测历史失败 ${JSON.stringify({error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -2067,7 +2096,7 @@ app.get('/api/monitors/:id/history', authMiddleware, async (req: Request, res: R
       }
     });
   } catch (e) {
-    log('ERROR', '获取历史记录失败', {monitorId: req.params.id, range, error: e.message, user: req.user?.username});
+    logger.error(`获取历史记录失败 ${JSON.stringify({monitorId: req.params.id, range, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -2163,7 +2192,7 @@ app.get('/api/settings', authMiddleware, async (req: Request, res: Response) => 
           };
         }
       } catch (e) {
-        log('WARN', '获取日志表大小失败', {error: e.message});
+        logger.warn(`获取日志表大小失败 ${JSON.stringify({error: e.message})}`);
       }
 
       res.json({
@@ -2185,7 +2214,7 @@ app.get('/api/settings', authMiddleware, async (req: Request, res: Response) => 
       });
     } catch (dbError) {
       // 如果表不存在或其他数据库错误，返回默认值
-      log('WARN', '获取设置失败，使用默认值', {error: dbError.message, user: req.user?.username});
+      logger.warn(`获取设置失败，使用默认值 ${JSON.stringify({error: dbError.message, user: req.user?.username})}`);
       res.json({
         publicPageTitle: '服务状态监控',
         logRetentionDays: 30,
@@ -2196,7 +2225,7 @@ app.get('/api/settings', authMiddleware, async (req: Request, res: Response) => 
       });
     }
   } catch (e) {
-    log('ERROR', '获取设置失败', {error: e.message, user: req.user?.username});
+    logger.error(`获取设置失败 ${JSON.stringify({error: e.message, user: req.user?.username})}`);
     res.json({
       publicPageTitle: '服务状态监控',
       logRetentionDays: 30,
@@ -2262,13 +2291,13 @@ app.post('/api/settings/test-webhook', authMiddleware, async (req: Request, res:
         });
         res.on('end', () => {
           if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-            log('INFO', '测试 Webhook 发送成功', {statusCode: res.statusCode, user: req.user?.username});
+            logger.info(`测试 Webhook 发送成功 ${JSON.stringify({statusCode: res.statusCode, user: req.user?.username})}`);
             resolve(undefined);
           } else {
-            log('WARN', '测试 Webhook 返回非成功状态码', {
+            logger.warn(`测试 Webhook 返回非成功状态码 ${JSON.stringify({
               statusCode: res.statusCode,
               user: req.user?.username
-            });
+            })}`);
             // 根据状态码返回友好的错误信息
             const code = res.statusCode || 0;
             let errorMsg = `HTTP ${code}`;
@@ -2287,14 +2316,14 @@ app.post('/api/settings/test-webhook', authMiddleware, async (req: Request, res:
       });
 
       req.on('error', (err: Error) => {
-        log('ERROR', '测试 Webhook 请求失败', {error: err.message, user: req.user?.username});
+        logger.error(`测试 Webhook 请求失败 ${JSON.stringify({error: err.message, user: req.user?.username})}`);
         reject(err);
       });
 
       req.setTimeout(10000); // 10秒超时
       req.on('timeout', () => {
         req.destroy();
-        log('ERROR', '测试 Webhook 请求超时', {user: req.user?.username});
+        logger.error(`测试 Webhook 请求超时 ${JSON.stringify({user: req.user?.username})}`);
         reject(new Error('Request timeout'));
       });
 
@@ -2307,7 +2336,7 @@ app.post('/api/settings/test-webhook', authMiddleware, async (req: Request, res:
 
     res.json({success: true, message: 'Webhook 测试成功'});
   } catch (error) {
-    log('ERROR', '测试 Webhook 失败', {error: error.message, user: req.user?.username});
+    logger.error(`测试 Webhook 失败 ${JSON.stringify({error: error.message, user: req.user?.username})}`);
     res.status(500).json({error: '测试失败: ' + error.message});
   }
 });
@@ -2354,10 +2383,10 @@ app.post('/api/settings/test-email', authMiddleware, async (req: Request, res: R
       html: testHtml
     });
 
-    log('INFO', '测试邮件发送成功', {to: toEmail, user: req.user?.username});
+    logger.info(`测试邮件发送成功 ${JSON.stringify({to: toEmail, user: req.user?.username})}`);
     res.json({success: true, message: '测试邮件已发送到 ' + toEmail});
   } catch (error) {
-    log('ERROR', '测试邮件发送失败', {error: error.message, user: req.user?.username});
+    logger.error(`测试邮件发送失败 ${JSON.stringify({error: error.message, user: req.user?.username})}`);
     res.status(500).json({error: '发送失败: ' + error.message});
   }
 });
@@ -2401,7 +2430,7 @@ app.put('/api/settings', authMiddleware, async (req: Request, res: Response) => 
       cachedPublicTitle = value;
       cachedPublicTitleAt = Date.now();
 
-      log('INFO', '更新设置成功', {publicPageTitle: value, user: req.user?.username});
+      logger.info(`更新设置成功 ${JSON.stringify({publicPageTitle: value, user: req.user?.username})}`);
     }
 
     if (logRetentionDays !== undefined) {
@@ -2421,7 +2450,7 @@ app.put('/api/settings', authMiddleware, async (req: Request, res: Response) => 
         ['logRetentionDays', value, value]
       );
 
-      log('INFO', '更新设置成功', {logRetentionDays: retentionDays, user: req.user?.username});
+      logger.info(`更新设置成功 ${JSON.stringify({logRetentionDays: retentionDays, user: req.user?.username})}`);
 
       // 重新调度定时任务以应用新的设置
       scheduleLogCleanup();
@@ -2434,7 +2463,7 @@ app.put('/api/settings', authMiddleware, async (req: Request, res: Response) => 
         'UPDATE users SET email = ? WHERE username = ? AND role = ?',
         [email, req.user.username, 'admin']
       );
-      log('INFO', '更新管理员邮箱成功', {email, user: req.user.username});
+      logger.info(`更新管理员邮箱成功 ${JSON.stringify({email, user: req.user.username})}`);
     }
 
     // 更新管理员密码
@@ -2453,7 +2482,7 @@ app.put('/api/settings', authMiddleware, async (req: Request, res: Response) => 
           'UPDATE users SET password = ? WHERE username = ? AND role = ?',
           [hashedPassword, req.user.username, 'admin']
         );
-        log('INFO', '更新管理员密码成功', {user: req.user.username});
+        logger.info(`更新管理员密码成功 ${JSON.stringify({user: req.user.username})}`);
       }
     }
 
@@ -2625,7 +2654,7 @@ app.put('/api/settings', authMiddleware, async (req: Request, res: Response) => 
       webhookHeaders: updatedWebhookConfig.webhookHeaders || ''
     });
   } catch (e) {
-    log('ERROR', '更新设置失败', {error: e.message, user: req.user?.username});
+    logger.error(`更新设置失败 ${JSON.stringify({error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -2648,7 +2677,7 @@ async function cleanupOldLogs() {
       : 30;
 
     if (isNaN(retentionDays) || retentionDays < 30) {
-      log('WARN', '日志保留天数设置无效，使用默认值30天');
+      logger.warn('日志保留天数设置无效，使用默认值30天');
       return;
     }
 
@@ -2663,16 +2692,16 @@ async function cleanupOldLogs() {
     );
 
     if (result.affectedRows > 0) {
-      log('INFO', '日志清理完成', {
+      logger.info(`日志清理完成 ${JSON.stringify({
         retentionDays,
         deletedRecords: result.affectedRows,
         cutoffDate: cutoffDate.toISOString()
-      });
+      })}`);
     } else {
-      log('INFO', '日志清理完成，无需删除记录', {retentionDays});
+      logger.info(`日志清理完成，无需删除记录 ${JSON.stringify({retentionDays})}`);
     }
   } catch (e) {
-    log('ERROR', '日志清理失败', {error: e.message});
+    logger.error(`日志清理失败 ${JSON.stringify({error: e.message})}`);
   }
 }
 
@@ -2695,10 +2724,10 @@ function scheduleLogCleanup() {
 
   const msUntilMidnight = nextMidnight.getTime() - now.getTime();
 
-  log('INFO', '定时任务已设置', {
+  logger.info(`定时任务已设置 ${JSON.stringify({
     nextCleanup: nextMidnight.toISOString(),
     msUntilMidnight
-  });
+  })}`);
 
   // 设置第一次执行时间（到下一个00:00）
   cleanupTimeout = setTimeout(() => {
@@ -2747,14 +2776,14 @@ app.get('/api/stats', authMiddleware, async (req: Request, res: Response) => {
       avgUptime24h: avgUptime
     });
   } catch (e) {
-    log('ERROR', 'API 错误', {path: req.path, method: req.method, error: e.message, user: req.user?.username});
+    logger.error(`API 错误 ${JSON.stringify({path: req.path, method: req.method, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
 
 app.post('/api/check-all', authMiddleware, async (req: Request, res: Response) => {
   try {
-    log('INFO', '开始批量检测所有监控', {user: req.user?.username});
+    logger.info(`开始批量检测所有监控 ${JSON.stringify({user: req.user?.username})}`);
     const [monitors] = await execQuery(pool!,'SELECT * FROM monitors WHERE enabled = 1');
     const results = await Promise.all(
       monitors.map(async (monitor: MonitorRow) => {
@@ -2767,10 +2796,10 @@ app.post('/api/check-all', authMiddleware, async (req: Request, res: Response) =
       })
     );
 
-    log('INFO', '批量检测完成', {total: monitors.length, user: req.user?.username});
+    logger.info(`批量检测完成 ${JSON.stringify({total: monitors.length, user: req.user?.username})}`);
     res.json(results);
   } catch (e: unknown) {
-    log('ERROR', '批量检测失败', {error: (e as Error).message, user: req.user?.username});
+    logger.error(`批量检测失败 ${JSON.stringify({error: (e as Error).message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -2799,10 +2828,10 @@ function startMonitorCheck(monitor: MonitorRow): void {
         // 监控被删除或禁用，停止定时任务
         clearInterval(interval);
         checkIntervals.delete(monitor.id);
-        log('INFO', '监控任务已停止', {monitorId: monitor.id, reason: rows.length === 0 ? '已删除' : '已禁用'});
+        logger.info(`监控任务已停止 ${JSON.stringify({monitorId: monitor.id, reason: rows.length === 0 ? '已删除' : '已禁用'})}`);
       }
     } catch (e) {
-      log('ERROR', '定时检测失败', {monitorId: monitor.id, error: e.message});
+      logger.error(`定时检测失败 ${JSON.stringify({monitorId: monitor.id, error: e.message})}`);
     }
   }, monitor.interval_seconds * 1000);
 
@@ -2815,9 +2844,9 @@ async function initializeChecks() {
   try {
     const [monitors] = await execQuery(pool!,'SELECT * FROM monitors WHERE enabled = 1');
     monitors.forEach(startMonitorCheck);
-    log('INFO', '初始化监控任务', {count: monitors.length});
+    logger.info(`初始化监控任务 ${JSON.stringify({count: monitors.length})}`);
   } catch (e) {
-    log('ERROR', '初始化监控任务失败', {error: e.message});
+    logger.error(`初始化监控任务失败 ${JSON.stringify({error: e.message})}`);
   }
 }
 
@@ -2855,11 +2884,11 @@ app.get('/api/public/title', async (req: Request, res: Response) => {
       res.json({title});
     } catch (dbError) {
       // 如果表不存在或其他数据库错误，返回默认值
-      log('WARN', '获取公开页面标题失败，使用默认值', {error: dbError.message});
+      logger.warn(`获取公开页面标题失败，使用默认值 ${JSON.stringify({error: dbError.message})}`);
       res.json({title: '服务状态监控'});
     }
   } catch (e: unknown) {
-    log('ERROR', '公开API错误', {path: req.path, method: req.method, error: (e as Error).message});
+    logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -2880,7 +2909,7 @@ app.get('/api/public/groups', async (req: Request, res: Response) => {
       sort_order: r.sort_order ?? 0
     })));
   } catch (e: unknown) {
-    log('ERROR', '公开API错误', {path: req.path, method: req.method, error: (e as Error).message});
+    logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -2922,7 +2951,7 @@ app.get('/api/public/monitors', async (req: Request, res: Response) => {
 
     res.json(monitorsWithUptime);
   } catch (e: unknown) {
-    log('ERROR', '公开API错误', {path: req.path, method: req.method, error: (e as Error).message});
+    logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -2948,7 +2977,7 @@ app.get('/api/public/monitors/statusbars', async (req: Request, res: Response) =
 
     res.json(buildStatusBars24h(ids, historyRows));
   } catch (e: unknown) {
-    log('ERROR', '公开API错误', {path: req.path, method: req.method, error: (e as Error).message});
+    logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -2996,7 +3025,7 @@ app.get('/api/public/stats', async (req: Request, res: Response) => {
 
     res.json(stats);
   } catch (e) {
-    log('ERROR', '公开API错误', {path: req.path, method: req.method, error: (e as Error).message});
+    logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
     res.status(500).json({error: (e as Error).message});
   }
 });
@@ -3012,7 +3041,7 @@ app.get('/setup', async (_req: Request, res: Response) => {
     }
   } catch (error) {
     // 如果检查失败，继续显示初始化页面
-    log('WARN', '检查初始化状态失败', {error: error.message});
+    logger.warn(`检查初始化状态失败 ${JSON.stringify({error: error.message})}`);
   }
 
   res.sendFile(path.join(process.cwd(), 'public', 'setup.html'));
@@ -3076,7 +3105,7 @@ app.get('/', (_req: Request, res: Response) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(out);
   })().catch((e: Error) => {
-    log('ERROR', '渲染首页失败', {error: e.message});
+    logger.error(`渲染首页失败 ${JSON.stringify({error: e.message})}`);
     res.status(500).send('Internal Server Error');
   });
 });
@@ -3091,7 +3120,7 @@ app.get('/manage', (_req: Request, res: Response) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(out);
   })().catch((e: Error) => {
-    log('ERROR', '渲染管理页失败', {error: e.message});
+    logger.error(`渲染管理页失败 ${JSON.stringify({error: e.message})}`);
     res.status(500).send('Internal Server Error');
   });
 });
@@ -3107,7 +3136,7 @@ app.get('*', (req: Request, res: Response) => {
     const filePath = path.join(process.cwd(), 'public', '404.html');
     res.status(404).sendFile(filePath);
   } catch (e: unknown) {
-    log('ERROR', '渲染 404 页面失败', {error: (e as Error).message, path: req.path});
+    logger.error(`渲染 404 页面失败 ${JSON.stringify({error: (e as Error).message, path: req.path})}`);
     res.status(404).send('404 Not Found');
   }
 });
@@ -3123,30 +3152,22 @@ async function start(): Promise<void> {
       await initializeChecks();
       // 启动日志清理定时任务
       scheduleLogCleanup();
-      log('INFO', '服务器启动成功', {port: PORT});
+      logger.info(`服务器启动成功 ${JSON.stringify({port: PORT})}`);
     } catch (e: unknown) {
-      log('ERROR', '连接数据库失败', {error: (e as Error).message});
-      log('WARN', '请检查数据库配置或删除 config.json 重新安装');
+      logger.error(`连接数据库失败 ${JSON.stringify({error: (e as Error).message})}`);
+      logger.warn('请检查数据库配置或删除 config.json 重新安装');
     }
   } else {
-    log('INFO', '系统未安装，等待初始化设置');
+    logger.info('系统未安装，等待初始化设置');
   }
 
   app.listen(PORT, () => {
-    log('INFO', 'HTTP 服务器启动', {port: PORT});
-    console.log(`
-╔═══════════════════════════════════════════════╗
-║                                               ║
-║   Xilore UptimeBot 监控服务已启动             ║
-║                                               ║
-║   访问地址: http://localhost:${PORT}             ║
-║                                               ║
-╚═══════════════════════════════════════════════╝
-    `);
+    logger.info(`HTTP 服务器启动 ${JSON.stringify({ port: PORT })}`);
+    logger.info(`Xilore UptimeBot 监控服务已启动，访问地址: http://localhost:${PORT}`);
   });
 }
 
 start().catch((error: Error) => {
-  log('ERROR', '服务器启动失败', {error: error.message, stack: error.stack});
+  logger.error(`服务器启动失败 ${JSON.stringify({error: error.message, stack: error.stack})}`);
   process.exit(1);
 });

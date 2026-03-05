@@ -7,8 +7,6 @@
 - [Docker Compose 部署（推荐）](#docker-compose-部署推荐)
 - [手动部署](#手动部署)
 - [生产环境配置](#生产环境配置)
-- [常用操作](#常用操作)
-- [故障排查](#故障排查)
 
 ---
 
@@ -26,9 +24,9 @@
 version: '3.8'
 
 services:
-  uptimebot:
+  uptime:
     image: bgluminous/xilore-uptime:latest
-    container_name: uptimebot
+    container_name: uptime
     environment:
         - PORT=3000
         - CONFIG_PATH=./config.yml
