@@ -1,6 +1,6 @@
 {
   "name": "xilore-uptime",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "简洁的网站监控工具 - 支持 HTTP、TCP 端口和 ICMP Ping 检测",
   "main": "dist/server/server.js",
   "author": "Luminous",
@@ -26,7 +26,7 @@
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.9.1",
     "nodemailer": "7.0.11",
-    "xilore-log4js": "^1.1.0"
+    "xilore-log4js": "^1.1.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
