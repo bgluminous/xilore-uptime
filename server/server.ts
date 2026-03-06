@@ -14,14 +14,14 @@ import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import nodemailer from 'nodemailer';
 import { getLogger } from 'xilore-log4js';
-import { connectDatabase, initializeTables } from './database';
+import { connectDatabase, initializeTables } from './database.js';
 import type {
   MonitorRow,
   MonitorGroupRow,
   SettingsRow,
   CheckHistoryRow,
   UptimeAggRow
-} from './db-types';
+} from './db-types.js';
 import type { Pool } from 'mysql2/promise';
 import { URL } from "url";
 
@@ -195,7 +195,7 @@ async function isInitialized() {
 // ============ 数据库连接（已迁移到 database.ts）============
 async function connectDatabaseWrapper() {
   if (!config || !config.database) throw new Error('数据库配置不存在');
-  pool = await connectDatabase(config as import('./database').AppConfigWithDatabase);
+  pool = await connectDatabase(config as import('./database.js').AppConfigWithDatabase);
 }
 
 // ============ 初始化检查中间件 ============
@@ -981,7 +981,7 @@ async function sendWebhookNotification(
 
     // 发送 Webhook 请求
     const parsedUrl = new URL(config.url!);
-    const httpModule = parsedUrl.protocol === 'https:' ? require('https') : require('http');
+    const httpModule = parsedUrl.protocol === 'https:' ? https : http;
 
     const requestOptions = {
       hostname: parsedUrl.hostname,
@@ -2273,7 +2273,7 @@ app.post('/api/settings/test-webhook', authMiddleware, async (req: Request, res:
 
     // 发送 Webhook 请求
     const parsedUrl = new URL(webhookUrl);
-    const httpModule = parsedUrl.protocol === 'https:' ? require('https') : require('http');
+    const httpModule = parsedUrl.protocol === 'https:' ? https : http;
 
     const requestOptions = {
       hostname: parsedUrl.hostname,
@@ -2283,20 +2283,21 @@ app.post('/api/settings/test-webhook', authMiddleware, async (req: Request, res:
       headers: headers
     };
 
+    const currentUser = req.user?.username;
     await new Promise((resolve: (v?: void) => void, reject: (e: Error) => void) => {
-      const req = httpModule.request(requestOptions, (res: http.IncomingMessage) => {
+      const httpReq = httpModule.request(requestOptions, (res: http.IncomingMessage) => {
         let data = '';
         res.on('data', (chunk: Buffer | string) => {
           data += chunk;
         });
         res.on('end', () => {
           if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-            logger.info(`测试 Webhook 发送成功 ${JSON.stringify({statusCode: res.statusCode, user: req.user?.username})}`);
+            logger.info(`测试 Webhook 发送成功 ${JSON.stringify({statusCode: res.statusCode, user: currentUser})}`);
             resolve(undefined);
           } else {
             logger.warn(`测试 Webhook 返回非成功状态码 ${JSON.stringify({
               statusCode: res.statusCode,
-              user: req.user?.username
+              user: currentUser
             })}`);
             // 根据状态码返回友好的错误信息
             const code = res.statusCode || 0;
@@ -2315,23 +2316,23 @@ app.post('/api/settings/test-webhook', authMiddleware, async (req: Request, res:
         });
       });
 
-      req.on('error', (err: Error) => {
-        logger.error(`测试 Webhook 请求失败 ${JSON.stringify({error: err.message, user: req.user?.username})}`);
+      httpReq.on('error', (err: Error) => {
+        logger.error(`测试 Webhook 请求失败 ${JSON.stringify({error: err.message, user: currentUser})}`);
         reject(err);
       });
 
-      req.setTimeout(10000); // 10秒超时
-      req.on('timeout', () => {
-        req.destroy();
-        logger.error(`测试 Webhook 请求超时 ${JSON.stringify({user: req.user?.username})}`);
+      httpReq.setTimeout(10000); // 10秒超时
+      httpReq.on('timeout', () => {
+        httpReq.destroy();
+        logger.error(`测试 Webhook 请求超时 ${JSON.stringify({user: currentUser})}`);
         reject(new Error('Request timeout'));
       });
 
       if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
-        req.write(JSON.stringify(payload));
+        httpReq.write(JSON.stringify(payload));
       }
 
-      req.end();
+      httpReq.end();
     });
 
     res.json({success: true, message: 'Webhook 测试成功'});
