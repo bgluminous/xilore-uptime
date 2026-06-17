@@ -202,6 +202,20 @@ export async function initializeTables(pool: Pool): Promise<void> {
 
   try {
     const [columns] = await pool.execute(
+      "SHOW COLUMNS FROM monitors LIKE 'feishu_notification'"
+    );
+    if (Array.isArray(columns) && columns.length === 0) {
+      await pool.execute(
+        "ALTER TABLE monitors ADD COLUMN feishu_notification TINYINT(1) DEFAULT 0 AFTER webhook_notification"
+      );
+      logger.info("✓ 已添加 feishu_notification 列");
+    }
+  } catch (e: unknown) {
+    logger.error("添加 feishu_notification 列失败:", e as Error);
+  }
+
+  try {
+    const [columns] = await pool.execute(
       "SHOW COLUMNS FROM monitors LIKE 'expected_status'"
     );
     if (Array.isArray(columns) && columns.length === 0) {

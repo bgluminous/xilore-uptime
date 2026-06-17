@@ -92,6 +92,80 @@ const icons = {
   settings: ICON_DEFS.settings
 };
 
+/**
+ * @param {string} id
+ * @returns {HTMLElement}
+ */
+function byId(id) {
+  const element = document.getElementById(id);
+  if (!element) {
+    throw new Error(`Missing DOM element: ${id}`);
+  }
+  return element;
+}
+
+/**
+ * @param {string} id
+ * @returns {HTMLInputElement}
+ */
+function input(id) {
+  return /** @type {HTMLInputElement} */ (byId(id));
+}
+
+/**
+ * @param {string} id
+ * @returns {HTMLFormElement}
+ */
+function form(id) {
+  return /** @type {HTMLFormElement} */ (byId(id));
+}
+
+/**
+ * @param {string} id
+ * @returns {HTMLCanvasElement}
+ */
+function canvas(id) {
+  return /** @type {HTMLCanvasElement} */ (byId(id));
+}
+
+/**
+ * @param {Event} event
+ * @returns {Element | null}
+ */
+function eventElement(event) {
+  return event.target instanceof Element ? event.target : null;
+}
+
+/**
+ * @param {Element} element
+ * @param {string} className
+ * @returns {boolean}
+ */
+function hasClass(element, className) {
+  return Array.prototype.indexOf.call(element.classList, className) !== -1;
+}
+
+/**
+ * @param {Element | null} element
+ * @returns {HTMLInputElement | null}
+ */
+function asInput(element) {
+  return element instanceof HTMLInputElement ? element : null;
+}
+
+/**
+ * @param {CanvasRenderingContext2D} context
+ * @param {object} config
+ * @returns {any}
+ */
+function createChart(context, config) {
+  const chartConstructor = window['Chart'];
+  if (typeof chartConstructor !== 'function') {
+    throw new Error('Chart.js is not loaded');
+  }
+  return new chartConstructor(context, config);
+}
+
 // ============ 主题切换 ============
 const theme = {
   init() {
@@ -189,11 +263,11 @@ const setup = {
 
   async testDatabase() {
     const config = {
-      host: document.getElementById('db-host').value,
-      port: parseInt(document.getElementById('db-port').value),
-      user: document.getElementById('db-user').value,
-      password: document.getElementById('db-password').value,
-      name: document.getElementById('db-name').value
+      host: input('db-host').value,
+      port: parseInt(input('db-port').value),
+      user: input('db-user').value,
+      password: input('db-password').value,
+      name: input('db-name').value
     };
 
     const resultEl = document.getElementById('db-test-result');
@@ -316,8 +390,8 @@ const setup = {
   },
 
   async completeSetup() {
-    const password = document.getElementById('admin-password').value;
-    const passwordConfirm = document.getElementById('admin-password-confirm').value;
+    const password = input('admin-password').value;
+    const passwordConfirm = input('admin-password-confirm').value;
 
     if (password !== passwordConfirm) {
       app.showToast('两次输入的密码不一致', 'error');
@@ -325,8 +399,8 @@ const setup = {
     }
 
     const adminConfig = {
-      username: document.getElementById('admin-username').value,
-      email: document.getElementById('admin-email').value,
+      username: input('admin-username').value,
+      email: input('admin-email').value,
       password: password
     };
 
@@ -415,8 +489,8 @@ const auth = {
   async login(e) {
     e.preventDefault();
 
-    const username = document.getElementById('login-username').value;
-    const password = document.getElementById('login-password').value;
+    const username = input('login-username').value;
+    const password = input('login-password').value;
     const errorEl = document.getElementById('login-error');
 
     errorEl.classList.remove('show');
@@ -476,9 +550,10 @@ const app = {
     if (/^https?:\/\//i.test(rawTarget)) return rawTarget;
 
     // 非 URL：尽量按域名/IP 打开（TCP/PING 也允许用户点击跳转）
+    const protocol = window.location.protocol === 'https:' ? 'https' : 'http';
     const port = m?.port ? String(m.port).trim() : '';
-    if (port) return `http://${rawTarget}:${port}`;
-    return `http://${rawTarget}`;
+    if (port) return `${protocol}://${rawTarget}:${port}`;
+    return `${protocol}://${rawTarget}`;
   },
 
   initIcons() {
@@ -552,28 +627,33 @@ const app = {
     // 监控弹窗点击外部不关闭（避免误操作丢失数据）
 
     document.getElementById('group-modal').addEventListener('click', (e) => {
-      if (e.target.classList.contains('modal-overlay')) {
+      const target = eventElement(e);
+      if (target && hasClass(target, 'modal-overlay')) {
         this.closeGroupModal();
       }
     });
 
     document.getElementById('detail-modal').addEventListener('click', (e) => {
-      if (e.target.classList.contains('modal-overlay')) {
+      const target = eventElement(e);
+      if (!target) return;
+
+      if (hasClass(target, 'modal-overlay')) {
         this.closeDetailModal();
         return;
       }
-      const delBtn = e.target.closest('button[data-action="deleteHistoryRecord"]');
+      const delBtn = target.closest('button[data-action="deleteHistoryRecord"]');
       if (delBtn) {
         e.stopPropagation();
-        const monitorId = parseInt(delBtn.dataset.monitorId, 10);
-        const historyId = parseInt(delBtn.dataset.historyId, 10);
+        const monitorId = parseInt(delBtn.getAttribute('data-monitor-id') || '', 10);
+        const historyId = parseInt(delBtn.getAttribute('data-history-id') || '', 10);
         if (monitorId && historyId) this.deleteHistoryRecord(monitorId, historyId).then(_r => {
         });
       }
     });
 
     document.getElementById('settings-modal').addEventListener('click', (e) => {
-      if (e.target.classList.contains('modal-overlay')) {
+      const target = eventElement(e);
+      if (target && hasClass(target, 'modal-overlay')) {
         this.closeSettingsModal();
       }
     });
@@ -583,7 +663,7 @@ const app = {
       tab.addEventListener('click', () => {
         document.querySelectorAll('.time-tab').forEach(t => t.classList.remove('active'));
         tab.classList.add('active');
-        this.currentTimeRange = tab.dataset.range;
+        this.currentTimeRange = tab.getAttribute('data-range');
         if (this.currentDetailId) {
           this.loadDetailData(this.currentDetailId).then(_r => {
           });
@@ -593,23 +673,26 @@ const app = {
 
     // 监控卡片点击事件（事件委托，避免内联 onclick 使用已废弃的全局 event）
     document.getElementById('monitor-list').addEventListener('click', (e) => {
-      const card = e.target.closest('.monitor-item');
+      const target = eventElement(e);
+      if (!target) return;
+
+      const card = target.closest('.monitor-item');
       if (!card) return;
 
       // 点击链接或操作按钮时由委托处理，不打开详情
-      if (e.target.closest('.monitor-target-link')) return;
-      const actionBtn = e.target.closest('.monitor-actions button[data-action][data-id]');
+      if (target.closest('.monitor-target-link')) return;
+      const actionBtn = target.closest('.monitor-actions button[data-action][data-id]');
       if (actionBtn) {
         e.stopPropagation();
-        const action = actionBtn.dataset.action;
-        const id = parseInt(actionBtn.dataset.id, 10);
+        const action = actionBtn.getAttribute('data-action');
+        const id = parseInt(actionBtn.getAttribute('data-id') || '', 10);
         if (action && id && typeof this[action] === 'function') {
           this[action](id);
         }
         return;
       }
 
-      const id = parseInt(card.dataset.id, 10);
+      const id = parseInt(card.getAttribute('data-id') || '', 10);
       if (id) this.showDetail(id).then(_r => {
       });
     });
@@ -1156,15 +1239,16 @@ const app = {
   showAddModal() {
     this.editingId = null;
     document.getElementById('modal-title').innerHTML = icons.add + ' 添加监控';
-    document.getElementById('monitor-form').reset();
-    document.getElementById('monitor-id').value = '';
-    document.getElementById('monitor-timeout').value = '10';
-    document.getElementById('monitor-retries').value = '0';
-    document.getElementById('monitor-expected-status').value = '200';
-    document.getElementById('monitor-group').value = '';
-    document.getElementById('monitor-is-public').checked = false;
-    document.getElementById('monitor-email-notification').checked = false;
-    document.getElementById('monitor-webhook-notification').checked = false;
+    form('monitor-form').reset();
+    input('monitor-id').value = '';
+    input('monitor-timeout').value = '10';
+    input('monitor-retries').value = '0';
+    input('monitor-expected-status').value = '200';
+    input('monitor-group').value = '';
+    input('monitor-is-public').checked = false;
+    input('monitor-email-notification').checked = false;
+    input('monitor-webhook-notification').checked = false;
+    input('monitor-feishu-notification').checked = false;
     this.updateGroupSelect();
     this.togglePortField();
     document.getElementById('monitor-modal').classList.add('active');
@@ -1178,7 +1262,7 @@ const app = {
 
   closeGroupModal() {
     document.getElementById('group-modal').classList.remove('active');
-    document.getElementById('new-group-name').value = '';
+    input('new-group-name').value = '';
   },
 
   renderGroupList() {
@@ -1246,6 +1330,8 @@ const app = {
     container.addEventListener('drop', async (e) => {
       e.preventDefault();
       e.stopPropagation();
+      const target = eventElement(e);
+      if (!target) return;
 
       if (!draggingGroupId) {
         console.error('没有拖拽中的分组ID');
@@ -1253,11 +1339,11 @@ const app = {
       }
 
       // 尝试从 target 向上查找列表项
-      let targetItem = e.target.closest('.group-list-item');
+      let targetItem = target.closest('.group-list-item');
 
       // 如果没找到，尝试查找最近的占位符，然后找它的兄弟元素
       if (!targetItem) {
-        const placeholder = e.target.closest('.drag-placeholder');
+        const placeholder = target.closest('.drag-placeholder');
         if (placeholder) {
           // 占位符的前一个或后一个兄弟元素应该是列表项
           targetItem = placeholder.previousElementSibling || placeholder.nextElementSibling;
@@ -1284,17 +1370,17 @@ const app = {
         }
       }
 
-      if (!targetItem || !targetItem.classList.contains('group-list-item')) {
+      if (!targetItem || !hasClass(targetItem, 'group-list-item')) {
         console.error('找不到目标列表项', {
-          target: e.target,
-          targetClassName: e.target.className,
+          target,
+          targetClassName: target.className,
           placeholder: container.querySelector('.drag-placeholder')
         });
         draggingGroupId = null;
         return;
       }
 
-      const targetId = parseInt(targetItem.dataset.id);
+      const targetId = parseInt(targetItem.getAttribute('data-id') || '', 10);
       if (!targetId) {
         console.error('目标项没有有效的ID', targetItem);
         draggingGroupId = null;
@@ -1336,10 +1422,16 @@ const app = {
 
     // 在容器上监听 dragover 事件（必须调用 preventDefault 才能触发 drop）
     container.addEventListener('dragover', (e) => {
+      const dragEvent = /** @type {DragEvent} */ (e);
       e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
+      if (dragEvent.dataTransfer) {
+        dragEvent.dataTransfer.dropEffect = 'move';
+      }
 
-      const targetItem = e.target.closest('.group-list-item');
+      const target = eventElement(e);
+      if (!target) return;
+
+      const targetItem = target.closest('.group-list-item');
       if (!targetItem) return;
 
       const dragging = document.querySelector('.dragging');
@@ -1363,9 +1455,13 @@ const app = {
     const items = container.querySelectorAll('.group-list-item');
     items.forEach(item => {
       item.addEventListener('dragstart', (e) => {
-        draggingGroupId = parseInt(item.dataset.id);
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', item.dataset.id);
+        const dragEvent = /** @type {DragEvent} */ (e);
+        const groupIdText = item.getAttribute('data-id') || '';
+        draggingGroupId = parseInt(groupIdText, 10);
+        if (dragEvent.dataTransfer) {
+          dragEvent.dataTransfer.effectAllowed = 'move';
+          dragEvent.dataTransfer.setData('text/plain', groupIdText);
+        }
         item.classList.add('dragging');
       });
 
@@ -1615,20 +1711,21 @@ const app = {
     this.editingId = id;
     this.updateGroupSelect();
     document.getElementById('modal-title').innerHTML = icons.edit + ' 编辑监控';
-    document.getElementById('monitor-id').value = id;
-    document.getElementById('monitor-name').value = monitor.name;
-    document.getElementById('monitor-type').value = monitor.type;
-    document.getElementById('monitor-target').value = monitor.target;
-    document.getElementById('monitor-port').value = monitor.port || '';
-    document.getElementById('monitor-interval').value = monitor.interval_seconds;
-    document.getElementById('monitor-timeout').value = monitor.timeout_seconds || 10;
-    document.getElementById('monitor-retries').value = monitor.retries || 0;
-    document.getElementById('monitor-expected-status').value = monitor.expected_status || 200;
-    document.getElementById('monitor-group').value = monitor.group_id || '';
-    document.getElementById('monitor-is-public').checked = monitor.is_public === 1 || monitor.is_public === true;
-    document.getElementById('monitor-email-notification').checked = monitor.email_notification === 1 || monitor.email_notification === true;
-    document.getElementById('monitor-webhook-notification').checked = monitor.webhook_notification === 1 || monitor.webhook_notification === true;
-    document.getElementById('monitor-auth-username').value = monitor.auth_username || '';
+    input('monitor-id').value = String(id);
+    input('monitor-name').value = monitor.name;
+    input('monitor-type').value = monitor.type;
+    input('monitor-target').value = monitor.target;
+    input('monitor-port').value = monitor.port || '';
+    input('monitor-interval').value = String(monitor.interval_seconds);
+    input('monitor-timeout').value = String(monitor.timeout_seconds || 10);
+    input('monitor-retries').value = String(monitor.retries || 0);
+    input('monitor-expected-status').value = String(monitor.expected_status || 200);
+    input('monitor-group').value = monitor.group_id ? String(monitor.group_id) : '';
+    input('monitor-is-public').checked = monitor.is_public === 1 || monitor.is_public === true;
+    input('monitor-email-notification').checked = monitor.email_notification === 1 || monitor.email_notification === true;
+    input('monitor-webhook-notification').checked = monitor.webhook_notification === 1 || monitor.webhook_notification === true;
+    input('monitor-feishu-notification').checked = monitor.feishu_notification === 1 || monitor.feishu_notification === true;
+    input('monitor-auth-username').value = monitor.auth_username || '';
     const pwdInput = document.getElementById('monitor-auth-password');
     if (pwdInput) {
       // 不回填敏感密码
@@ -1647,7 +1744,7 @@ const app = {
   },
 
   togglePortField() {
-    const type = document.getElementById('monitor-type').value;
+    const type = input('monitor-type').value;
     const portGroup = document.getElementById('port-group');
     const portInput = document.getElementById('monitor-port');
     const expectedStatusGroup = document.getElementById('expected-status-group');
@@ -1675,28 +1772,29 @@ const app = {
   async saveMonitor(e) {
     e.preventDefault();
 
-    const type = document.getElementById('monitor-type').value;
-    const groupId = document.getElementById('monitor-group').value;
+    const type = input('monitor-type').value;
+    const groupId = input('monitor-group').value;
     const data = {
-      name: document.getElementById('monitor-name').value,
+      name: input('monitor-name').value,
       type: type,
-      target: document.getElementById('monitor-target').value,
-      port: document.getElementById('monitor-port').value ? parseInt(document.getElementById('monitor-port').value) : null,
-      interval_seconds: parseInt(document.getElementById('monitor-interval').value),
-      timeout_seconds: parseInt(document.getElementById('monitor-timeout').value),
-      retries: parseInt(document.getElementById('monitor-retries').value),
-      expected_status: type === 'http' ? parseInt(document.getElementById('monitor-expected-status').value) : 200,
+      target: input('monitor-target').value,
+      port: input('monitor-port').value ? parseInt(input('monitor-port').value) : null,
+      interval_seconds: parseInt(input('monitor-interval').value),
+      timeout_seconds: parseInt(input('monitor-timeout').value),
+      retries: parseInt(input('monitor-retries').value),
+      expected_status: type === 'http' ? parseInt(input('monitor-expected-status').value) : 200,
       group_id: (groupId && groupId !== '') ? parseInt(groupId) : null,
-      is_public: document.getElementById('monitor-is-public').checked,
-      email_notification: document.getElementById('monitor-email-notification').checked,
-      webhook_notification: document.getElementById('monitor-webhook-notification').checked,
-      auth_username: type === 'http' ? document.getElementById('monitor-auth-username').value.trim() || null : null,
-      auth_password: type === 'http' ? (document.getElementById('monitor-auth-password').value || null) : null
+      is_public: input('monitor-is-public').checked,
+      email_notification: input('monitor-email-notification').checked,
+      webhook_notification: input('monitor-webhook-notification').checked,
+      feishu_notification: input('monitor-feishu-notification').checked,
+      auth_username: type === 'http' ? input('monitor-auth-username').value.trim() || null : null,
+      auth_password: type === 'http' ? (input('monitor-auth-password').value || null) : null
     };
 
     // 编辑模式下：密码留空代表“不修改”，不要发送 auth_password 字段（避免覆盖为 null）
     if (this.editingId && type === 'http') {
-      const pwdVal = document.getElementById('monitor-auth-password').value;
+      const pwdVal = input('monitor-auth-password').value;
       if (!pwdVal) {
         delete data.auth_password;
       }
@@ -1820,8 +1918,8 @@ const app = {
     const btn = item?.querySelector('.btn-icon-refresh');
 
     // 查找详情弹窗的按钮
-    const detailModal = document.getElementById('detail-modal');
-    const detailBtn = detailModal?.classList.contains('active')
+    const detailModal = byId('detail-modal');
+    const detailBtn = hasClass(detailModal, 'active')
       ? detailModal.querySelector('.detail-footer .btn-primary')
       : null;
 
@@ -1922,7 +2020,7 @@ const app = {
 
     // 重置时间范围按钮
     document.querySelectorAll('.time-tab').forEach(t => {
-      t.classList.toggle('active', t.dataset.range === '24h');
+      t.classList.toggle('active', t.getAttribute('data-range') === '24h');
     });
 
     // 设置基础信息
@@ -2023,7 +2121,8 @@ const app = {
   },
 
   renderDetailChart(history) {
-    const ctx = document.getElementById('detail-chart').getContext('2d');
+    const ctx = canvas('detail-chart').getContext('2d');
+    if (!ctx) return;
 
     if (this.detailChart) {
       this.detailChart.destroy();
@@ -2032,7 +2131,7 @@ const app = {
 
     // 处理空数据
     if (!history || history.length === 0) {
-      this.detailChart = new Chart(ctx, {
+      this.detailChart = createChart(ctx, {
         type: 'line',
         data: {labels: [], datasets: [{data: []}]},
         options: {
@@ -2058,7 +2157,7 @@ const app = {
       tooltipBorder: isDark ? '#475569' : '#e2e8f0'
     };
 
-    this.detailChart = new Chart(ctx, {
+    this.detailChart = createChart(ctx, {
       type: 'line',
       data: {
         labels: data.map(h => this.formatChartTime(h.checked_at)),
@@ -2273,26 +2372,26 @@ const app = {
     const date = new Date(dateStr);
 
     // 所有时间范围都显示日期和时分
-    return date.toLocaleString('zh-CN', {
+    return new Intl.DateTimeFormat('zh-CN', {
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit'
-    });
+    }).format(date);
   },
 
   formatFullTime(dateStr) {
     if (!dateStr) return '-';
     const date = new Date(dateStr);
     if (isNaN(date.getTime())) return '-';
-    return date.toLocaleString('zh-CN', {
+    return new Intl.DateTimeFormat('zh-CN', {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit'
-    });
+    }).format(date);
   },
 
   /** 查看历史。由监控卡片上的 data-action="showHistory" 按钮通过事件委托调用，内部重定向到详情弹窗，勿删。 */
@@ -2355,15 +2454,13 @@ const app = {
     this.switchSettingsSection('general');
 
     // 重置删除确认输入框
-    const confirmInput = document.getElementById('delete-all-history-confirm');
-    if (confirmInput) {
-      confirmInput.value = '';
-      const btn = document.getElementById('delete-all-history-btn');
-      if (btn) btn.disabled = true;
-    }
+    const confirmInput = input('delete-all-history-confirm');
+    confirmInput.value = '';
+    const deleteBtn = document.getElementById('delete-all-history-btn');
+    if (deleteBtn) deleteBtn.disabled = true;
 
     // 监听确认输入框，启用/禁用删除按钮
-    if (confirmInput && !confirmInput.hasAttribute('data-listener')) {
+    if (!confirmInput.hasAttribute('data-listener')) {
       confirmInput.setAttribute('data-listener', 'true');
       confirmInput.addEventListener('input', () => {
         const btn = document.getElementById('delete-all-history-btn');
@@ -2386,20 +2483,20 @@ const app = {
         const data = await response.json().catch(() => ({}));
         console.error('加载设置失败:', data);
         // 即使失败也使用默认值
-        document.getElementById('public-page-title').value = '服务状态监控';
+        input('public-page-title').value = '服务状态监控';
         this.showToast(data.error || '加载设置失败，使用默认值', 'warning');
         return;
       }
 
       const settings = await response.json();
-      document.getElementById('public-page-title').value = settings.publicPageTitle || '服务状态监控';
-      document.getElementById('log-retention-days').value = settings.logRetentionDays || 30;
+      input('public-page-title').value = settings.publicPageTitle || '服务状态监控';
+      input('log-retention-days').value = String(settings.logRetentionDays || 30);
 
       // 加载管理员邮箱（无论当前显示哪个面板，都先加载数据）
       // 只在设置面板中查找，避免找到 setup 步骤中的输入框
       const adminSection = document.getElementById('settings-section-admin');
       if (adminSection) {
-        const adminEmailInput = adminSection.querySelector('#admin-email-settings');
+        const adminEmailInput = asInput(adminSection.querySelector('#admin-email-settings'));
         if (adminEmailInput) {
           const email = settings.adminEmail || '';
           adminEmailInput.value = email;
@@ -2409,33 +2506,41 @@ const app = {
       }
 
       // 加载邮件配置（无论当前显示哪个面板，都先加载数据）
-      document.getElementById('smtp-host').value = settings.smtpHost || '';
-      document.getElementById('smtp-port').value = settings.smtpPort || '587';
-      document.getElementById('smtp-user').value = settings.smtpUser || '';
+      input('smtp-host').value = settings.smtpHost || '';
+      input('smtp-port').value = settings.smtpPort || '587';
+      input('smtp-user').value = settings.smtpUser || '';
       // 不回填敏感密码
       const smtpPwdInput = document.getElementById('smtp-password');
       if (smtpPwdInput) {
         smtpPwdInput.value = '';
         smtpPwdInput.placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : '';
       }
-      document.getElementById('smtp-from').value = settings.smtpFrom || '';
-      document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
+      input('smtp-from').value = settings.smtpFrom || '';
+      input('smtp-secure').checked = settings.smtpSecure || false;
 
       // 加载邮件配置（无论当前显示哪个面板，都先加载数据）
-      document.getElementById('smtp-host').value = settings.smtpHost || '';
-      document.getElementById('smtp-port').value = settings.smtpPort || '587';
-      document.getElementById('smtp-user').value = settings.smtpUser || '';
+      input('smtp-host').value = settings.smtpHost || '';
+      input('smtp-port').value = settings.smtpPort || '587';
+      input('smtp-user').value = settings.smtpUser || '';
       if (smtpPwdInput) {
         smtpPwdInput.value = '';
         smtpPwdInput.placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : '';
       }
-      document.getElementById('smtp-from').value = settings.smtpFrom || '';
-      document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
+      input('smtp-from').value = settings.smtpFrom || '';
+      input('smtp-secure').checked = settings.smtpSecure || false;
 
       // 加载 Webhook 配置（无论当前显示哪个面板，都先加载数据）
-      document.getElementById('webhook-url').value = settings.webhookUrl || '';
-      document.getElementById('webhook-method').value = settings.webhookMethod || 'POST';
-      document.getElementById('webhook-headers').value = settings.webhookHeaders || '';
+      input('webhook-url').value = settings.webhookUrl || '';
+      input('webhook-method').value = settings.webhookMethod || 'POST';
+      input('webhook-headers').value = settings.webhookHeaders || '';
+
+      // 加载飞书配置（不回填签名密钥）
+      input('feishu-webhook-url').value = settings.feishuWebhookUrl || '';
+      const feishuSecretInput = document.getElementById('feishu-secret');
+      if (feishuSecretInput) {
+        feishuSecretInput.value = '';
+        feishuSecretInput.placeholder = settings.feishuSecretSet ? '已设置（留空不修改）' : '机器人安全设置中的签名密钥';
+      }
 
       // 显示日志表大小
       const logTableSizeText = document.getElementById('log-table-size-text');
@@ -2461,9 +2566,9 @@ const app = {
     } catch (error) {
       console.error('加载设置失败:', error);
       // 即使出错也使用默认值
-      document.getElementById('public-page-title').value = '服务状态监控';
-      document.getElementById('log-retention-days').value = 30;
-      const adminEmailInput = document.getElementById('admin-email-settings');
+      input('public-page-title').value = '服务状态监控';
+      input('log-retention-days').value = '30';
+      const adminEmailInput = asInput(document.getElementById('admin-email-settings'));
       if (adminEmailInput) adminEmailInput.value = '';
       this.showToast('加载设置失败，使用默认值', 'warning');
     }
@@ -2481,18 +2586,20 @@ const app = {
     // 更新菜单项状态
     document.querySelectorAll('.settings-menu-item').forEach(item => {
       item.classList.remove('active');
-      if (item.dataset.section === section) {
+      if (item.getAttribute('data-section') === section) {
         item.classList.add('active');
       }
     });
 
     // 显示对应的内容区域
     document.querySelectorAll('.settings-section').forEach(sec => {
-      sec.style.display = 'none';
+      if (sec instanceof HTMLElement) {
+        sec.style.display = 'none';
+      }
     });
 
     const targetSection = document.getElementById(`settings-section-${section}`);
-    if (targetSection) {
+    if (targetSection instanceof HTMLElement) {
       targetSection.style.display = 'block';
     }
 
@@ -2536,6 +2643,16 @@ const app = {
           清空 Webhook 配置
         `;
         clearBtn.title = '清空并删除已保存的 Webhook 配置';
+      } else if (section === 'feishu') {
+        clearBtn.style.display = 'inline-flex';
+        clearBtn.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-right: 6px; vertical-align: middle;">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+          </svg>
+          清空飞书配置
+        `;
+        clearBtn.title = '清空并删除已保存的飞书配置';
       } else {
         clearBtn.style.display = 'none';
       }
@@ -2553,16 +2670,16 @@ const app = {
       const response = await fetch('/api/settings', {credentials: 'same-origin'});
       if (response.ok) {
         const settings = await response.json();
-        document.getElementById('smtp-host').value = settings.smtpHost || '';
-        document.getElementById('smtp-port').value = settings.smtpPort || '587';
-        document.getElementById('smtp-user').value = settings.smtpUser || '';
+        input('smtp-host').value = settings.smtpHost || '';
+        input('smtp-port').value = settings.smtpPort || '587';
+        input('smtp-user').value = settings.smtpUser || '';
         const smtpPwdInput = document.getElementById('smtp-password');
         if (smtpPwdInput) {
           smtpPwdInput.value = '';
           smtpPwdInput.placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : '';
         }
-        document.getElementById('smtp-from').value = settings.smtpFrom || '';
-        document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
+        input('smtp-from').value = settings.smtpFrom || '';
+        input('smtp-secure').checked = settings.smtpSecure || false;
       }
     } catch (error) {
       console.error('加载邮件配置失败:', error);
@@ -2576,12 +2693,12 @@ const app = {
     btn.innerHTML = '<span>发送中...</span>';
 
     // 从页面获取邮件配置
-    const smtpHost = document.getElementById('smtp-host').value.trim();
-    const smtpPort = document.getElementById('smtp-port').value.trim();
-    const smtpUser = document.getElementById('smtp-user').value.trim();
-    const smtpPassword = document.getElementById('smtp-password').value;
-    const smtpFrom = document.getElementById('smtp-from').value.trim();
-    const smtpSecure = document.getElementById('smtp-secure').checked;
+    const smtpHost = input('smtp-host').value.trim();
+    const smtpPort = input('smtp-port').value.trim();
+    const smtpUser = input('smtp-user').value.trim();
+    const smtpPassword = input('smtp-password').value;
+    const smtpFrom = input('smtp-from').value.trim();
+    const smtpSecure = input('smtp-secure').checked;
 
     // 验证必填项
     if (!smtpHost || !smtpUser || !smtpPassword || !smtpFrom) {
@@ -2593,7 +2710,7 @@ const app = {
 
     // 获取管理员邮箱
     const adminSection = document.getElementById('settings-section-admin');
-    const adminEmailInput = adminSection ? adminSection.querySelector('#admin-email-settings') : null;
+    const adminEmailInput = adminSection ? asInput(adminSection.querySelector('#admin-email-settings')) : null;
     const adminEmail = adminEmailInput ? adminEmailInput.value.trim() : null;
 
     if (!adminEmail) {
@@ -2641,9 +2758,9 @@ const app = {
     btn.innerHTML = '<span>发送中...</span>';
 
     // 从页面获取 Webhook 配置
-    const webhookUrl = document.getElementById('webhook-url').value.trim();
-    const webhookMethod = document.getElementById('webhook-method').value;
-    const webhookHeaders = document.getElementById('webhook-headers').value.trim();
+    const webhookUrl = input('webhook-url').value.trim();
+    const webhookMethod = input('webhook-method').value;
+    const webhookHeaders = input('webhook-headers').value.trim();
 
     // 验证必填项
     if (!webhookUrl) {
@@ -2680,13 +2797,59 @@ const app = {
     }
   },
 
+  async testFeishu() {
+    const btn = document.getElementById('test-feishu-btn');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span>发送中...</span>';
+
+    const feishuWebhookUrl = input('feishu-webhook-url').value.trim();
+    const feishuSecret = input('feishu-secret').value;
+
+    if (!feishuWebhookUrl) {
+      this.showToast('请先填写飞书 Webhook URL', 'error');
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+      return;
+    }
+
+    try {
+      const requestBody = {
+        feishuWebhookUrl
+      };
+      if (feishuSecret) {
+        requestBody.feishuSecret = feishuSecret;
+      }
+
+      const response = await fetch('/api/settings/test-feishu', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        credentials: 'same-origin',
+        body: JSON.stringify(requestBody)
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        this.showToast(data.message || '飞书测试成功', 'success');
+      } else {
+        this.showToast(data.error || '飞书测试失败', 'error');
+      }
+    } catch (error) {
+      this.showToast('飞书测试失败: ' + error.message, 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  },
+
   async loadAdminEmail() {
     try {
       // 只在设置面板中查找邮箱输入框，避免找到 setup 步骤中的输入框
       const adminSection = document.getElementById('settings-section-admin');
       if (!adminSection) return;
 
-      const adminEmailInput = adminSection.querySelector('#admin-email-settings');
+      const adminEmailInput = asInput(adminSection.querySelector('#admin-email-settings'));
       if (!adminEmailInput) return;
 
       // 先检查是否已有加载的数据
@@ -2717,6 +2880,9 @@ const app = {
     }
     if (this.currentSettingsSection === 'webhook') {
       return this.clearWebhookConfig('settings-clear-btn');
+    }
+    if (this.currentSettingsSection === 'feishu') {
+      return this.clearFeishuConfig('settings-clear-btn');
     }
   },
 
@@ -2761,11 +2927,11 @@ const app = {
 
       const settings = await response.json().catch(() => ({}));
 
-      document.getElementById('smtp-host').value = settings.smtpHost || '';
-      document.getElementById('smtp-port').value = settings.smtpPort || '587';
-      document.getElementById('smtp-user').value = settings.smtpUser || '';
-      document.getElementById('smtp-from').value = settings.smtpFrom || '';
-      document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
+      input('smtp-host').value = settings.smtpHost || '';
+      input('smtp-port').value = settings.smtpPort || '587';
+      input('smtp-user').value = settings.smtpUser || '';
+      input('smtp-from').value = settings.smtpFrom || '';
+      input('smtp-secure').checked = settings.smtpSecure || false;
       const smtpPwdInput = document.getElementById('smtp-password');
       if (smtpPwdInput) {
         smtpPwdInput.value = '';
@@ -2821,9 +2987,9 @@ const app = {
       }
 
       const settings = await response.json().catch(() => ({}));
-      document.getElementById('webhook-url').value = settings.webhookUrl || '';
-      document.getElementById('webhook-method').value = settings.webhookMethod || 'POST';
-      document.getElementById('webhook-headers').value = settings.webhookHeaders || '';
+      input('webhook-url').value = settings.webhookUrl || '';
+      input('webhook-method').value = settings.webhookMethod || 'POST';
+      input('webhook-headers').value = settings.webhookHeaders || '';
 
       this.showToast('Webhook 配置已清空', 'success');
     } catch (error) {
@@ -2837,11 +3003,66 @@ const app = {
     }
   },
 
+  async clearFeishuConfig(buttonId = 'clear-feishu-btn') {
+    if (!confirm('确定要清空飞书配置吗？这将删除已保存的飞书 Webhook 和签名密钥，用于停用飞书通知。')) {
+      return;
+    }
+
+    const btn = document.getElementById(buttonId);
+    const originalText = btn ? btn.innerHTML : null;
+    if (btn) {
+      btn.disabled = true;
+      btn.classList.add('loading');
+      btn.innerHTML = '<span>清空中...</span>';
+    }
+
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          feishuWebhookUrl: '',
+          feishuSecret: ''
+        })
+      });
+
+      if (response.status === 401) {
+        auth.showLogin();
+        return;
+      }
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        this.showToast(data.error || '清空飞书配置失败', 'error');
+        return;
+      }
+
+      const settings = await response.json().catch(() => ({}));
+      input('feishu-webhook-url').value = settings.feishuWebhookUrl || '';
+      const feishuSecretInput = document.getElementById('feishu-secret');
+      if (feishuSecretInput) {
+        feishuSecretInput.value = '';
+        feishuSecretInput.placeholder = settings.feishuSecretSet ? '已设置（留空不修改）' : '机器人安全设置中的签名密钥';
+      }
+
+      this.showToast('飞书配置已清空', 'success');
+    } catch (error) {
+      this.showToast(error.message || '清空飞书配置失败', 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.classList.remove('loading');
+        if (originalText !== null) btn.innerHTML = originalText;
+      }
+    }
+  },
+
   async saveSettings(e) {
     e.preventDefault();
 
-    const publicPageTitle = document.getElementById('public-page-title').value.trim() || '服务状态监控';
-    const logRetentionDays = parseInt(document.getElementById('log-retention-days').value, 10);
+    const publicPageTitle = input('public-page-title').value.trim() || '服务状态监控';
+    const logRetentionDays = parseInt(input('log-retention-days').value, 10);
 
     if (isNaN(logRetentionDays) || logRetentionDays < 30) {
       this.showToast('日志保留天数必须至少为30天', 'error');
@@ -2850,12 +3071,12 @@ const app = {
 
     // 获取管理员邮箱（只在管理员账户面板中查找）
     const adminSection = document.getElementById('settings-section-admin');
-    const adminEmailInput = adminSection ? adminSection.querySelector('#admin-email-settings') : null;
+    const adminEmailInput = adminSection ? asInput(adminSection.querySelector('#admin-email-settings')) : null;
     const adminEmail = adminEmailInput ? adminEmailInput.value.trim() || null : null;
 
     // 获取密码（如果填写了）
-    const adminPassword = document.getElementById('admin-password-settings').value;
-    const adminPasswordConfirm = document.getElementById('admin-password-confirm-settings').value;
+    const adminPassword = input('admin-password-settings').value;
+    const adminPasswordConfirm = input('admin-password-confirm-settings').value;
 
     // 如果填写了密码，验证密码
     if (adminPassword) {
@@ -2871,17 +3092,17 @@ const app = {
     }
 
     // 获取邮件配置
-    const smtpHost = document.getElementById('smtp-host').value.trim();
-    const smtpPort = document.getElementById('smtp-port').value.trim();
-    const smtpUser = document.getElementById('smtp-user').value.trim();
-    const smtpPassword = document.getElementById('smtp-password').value;
-    const smtpFrom = document.getElementById('smtp-from').value.trim();
-    const smtpSecure = document.getElementById('smtp-secure').checked;
+    const smtpHost = input('smtp-host').value.trim();
+    const smtpPort = input('smtp-port').value.trim();
+    const smtpUser = input('smtp-user').value.trim();
+    const smtpPassword = input('smtp-password').value;
+    const smtpFrom = input('smtp-from').value.trim();
+    const smtpSecure = input('smtp-secure').checked;
 
     // 获取 Webhook 配置
-    const webhookUrl = document.getElementById('webhook-url').value.trim();
-    const webhookMethod = document.getElementById('webhook-method').value;
-    const webhookHeadersText = document.getElementById('webhook-headers').value.trim();
+    const webhookUrl = input('webhook-url').value.trim();
+    const webhookMethod = input('webhook-method').value;
+    const webhookHeadersText = input('webhook-headers').value.trim();
     let webhookHeaders = {};
     if (webhookHeadersText) {
       try {
@@ -2891,6 +3112,10 @@ const app = {
         return;
       }
     }
+
+    // 获取飞书配置
+    const feishuWebhookUrl = input('feishu-webhook-url').value.trim();
+    const feishuSecret = input('feishu-secret').value;
 
     try {
       const requestBody = {
@@ -2904,12 +3129,18 @@ const app = {
         smtpSecure,
         webhookUrl,
         webhookMethod,
-        webhookHeaders: webhookHeadersText ? JSON.stringify(webhookHeaders) : ''
+        webhookHeaders: webhookHeadersText ? JSON.stringify(webhookHeaders) : '',
+        feishuWebhookUrl
       };
 
       // SMTP 密码：只有用户输入了才更新（留空表示不修改）
       if (smtpPassword) {
         requestBody.smtpPassword = smtpPassword;
+      }
+
+      // 飞书签名密钥：只有用户输入了才更新（留空表示不修改）
+      if (feishuSecret) {
+        requestBody.feishuSecret = feishuSecret;
       }
 
       // 只有在填写了密码时才发送密码字段
@@ -2933,37 +3164,45 @@ const app = {
 
       // 如果更新了密码，清空密码字段
       if (adminPassword) {
-        document.getElementById('admin-password-settings').value = '';
-        document.getElementById('admin-password-confirm-settings').value = '';
+        input('admin-password-settings').value = '';
+        input('admin-password-confirm-settings').value = '';
       }
 
       // 更新显示
       const settings = await response.json();
       const adminSection = document.getElementById('settings-section-admin');
       if (adminSection) {
-        const adminEmailInput = adminSection.querySelector('#admin-email-settings');
+        const adminEmailInput = asInput(adminSection.querySelector('#admin-email-settings'));
         if (adminEmailInput) {
           adminEmailInput.value = settings.adminEmail || '';
         }
       }
 
       // 更新邮件配置显示
-      document.getElementById('smtp-host').value = settings.smtpHost || '';
-      document.getElementById('smtp-port').value = settings.smtpPort || '587';
-      document.getElementById('smtp-user').value = settings.smtpUser || '';
+      input('smtp-host').value = settings.smtpHost || '';
+      input('smtp-port').value = settings.smtpPort || '587';
+      input('smtp-user').value = settings.smtpUser || '';
       // 不回填敏感密码，仅更新 placeholder
       const smtpPwdInput = document.getElementById('smtp-password');
       if (smtpPwdInput) {
         smtpPwdInput.value = '';
         smtpPwdInput.placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : '';
       }
-      document.getElementById('smtp-from').value = settings.smtpFrom || '';
-      document.getElementById('smtp-secure').checked = settings.smtpSecure || false;
+      input('smtp-from').value = settings.smtpFrom || '';
+      input('smtp-secure').checked = settings.smtpSecure || false;
 
       // 更新 Webhook 配置显示
-      document.getElementById('webhook-url').value = settings.webhookUrl || '';
-      document.getElementById('webhook-method').value = settings.webhookMethod || 'POST';
-      document.getElementById('webhook-headers').value = settings.webhookHeaders || '';
+      input('webhook-url').value = settings.webhookUrl || '';
+      input('webhook-method').value = settings.webhookMethod || 'POST';
+      input('webhook-headers').value = settings.webhookHeaders || '';
+
+      // 更新飞书配置显示
+      input('feishu-webhook-url').value = settings.feishuWebhookUrl || '';
+      const feishuSecretInput = document.getElementById('feishu-secret');
+      if (feishuSecretInput) {
+        feishuSecretInput.value = '';
+        feishuSecretInput.placeholder = settings.feishuSecretSet ? '已设置（留空不修改）' : '机器人安全设置中的签名密钥';
+      }
 
       // 保存成功后刷新页面以应用新设置
       this.showToast('设置已保存，页面即将刷新...', 'success');
@@ -2976,7 +3215,7 @@ const app = {
   },
 
   async deleteAllHistory() {
-    const confirmInput = document.getElementById('delete-all-history-confirm');
+    const confirmInput = input('delete-all-history-confirm');
     const confirmValue = confirmInput.value.trim();
 
     if (confirmValue !== 'DELETE') {

@@ -2,16 +2,6 @@
  * 数据库表行类型定义，与 schema 保持一致，便于类型推导与重构。
  */
 
-/** users 表 */
-export interface UserRow {
-  id: number;
-  username: string;
-  password: string;
-  email: string | null;
-  role: 'admin' | 'user';
-  created_at?: Date | string;
-}
-
 /** monitor_groups 表 */
 export interface MonitorGroupRow {
   id: number;
@@ -43,6 +33,7 @@ export interface MonitorRow {
   is_public?: number;
   email_notification?: number;
   webhook_notification?: number;
+  feishu_notification?: number;
   auth_username?: string | null;
   auth_password?: string | null;
   /** SELECT 计算字段等 */

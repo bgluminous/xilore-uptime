@@ -14,7 +14,7 @@
     <div class="setup-card">
       <div class="setup-header">
         <div class="logo-icon">
-          <img src="/favicon.png" alt="Xilore Uptime" width="28" height="28">
+          <img src="/favicon.png" alt="Xilore Uptime">
         </div>
         <h1>Xilore Uptime</h1>
         <p>安装向导</p>
@@ -128,7 +128,7 @@
     <div class="login-card">
       <div class="login-header">
         <div class="logo-icon">
-          <img src="/favicon.png" alt="Xilore Uptime" width="28" height="28">
+          <img src="/favicon.png" alt="Xilore Uptime">
         </div>
         <h1>Xilore Uptime</h1>
       </div>
@@ -157,7 +157,7 @@
     <header class="top-header">
       <div class="header-left">
         <div class="logo">
-          <img src="/favicon.png" alt="Xilore Uptime" width="24" height="24">
+          <img src="/favicon.png" alt="Xilore Uptime">
           <span class="logo-text"><span class="logo-brand">Xilore </span>Uptime</span>
         </div>
       </div>
@@ -326,7 +326,7 @@
         <div class="form-row">
           <div class="form-group">
             <label for="monitor-interval"><span class="form-icon" id="form-icon-interval"></span> 检测间隔（秒）</label>
-            <input type="number" id="monitor-interval" value="60" min="10" max="3600">
+            <input type="number" id="monitor-interval" value="60" min="10" max="7200">
           </div>
           
           <div class="form-group">
@@ -363,6 +363,13 @@
           <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
             <input type="checkbox" id="monitor-webhook-notification" style="width: auto; margin: 0;">
             <span>Webhook 提示（状态变化时发送 Webhook 通知）</span>
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="monitor-feishu-notification" style="width: auto; margin: 0;">
+            <span>飞书提示（状态变化时发送飞书通知）</span>
           </label>
         </div>
         
@@ -581,6 +588,12 @@
             </svg>
             <span>Webhook 配置</span>
           </div>
+          <div class="settings-menu-item" data-section="feishu" onclick="app.switchSettingsSection('feishu')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            <span>飞书配置</span>
+          </div>
           <div class="settings-menu-item" data-section="danger" onclick="app.switchSettingsSection('danger')">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
               <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
@@ -717,6 +730,31 @@
                   测试 Webhook
                 </button>
                 <p class="form-hint">点击此按钮将发送一个测试 Webhook 请求</p>
+              </div>
+            </div>
+
+            <!-- 飞书配置 -->
+            <div class="settings-section" id="settings-section-feishu" style="display: none;">
+              <div class="form-group">
+                <label for="feishu-webhook-url">飞书 Webhook URL</label>
+                <input type="url" id="feishu-webhook-url" placeholder="例如：https://open.feishu.cn/open-apis/bot/v2/hook/xxx">
+                <p class="form-hint">飞书群自定义机器人的 Webhook 地址</p>
+              </div>
+
+              <div class="form-group">
+                <label for="feishu-secret">签名密钥（可选）</label>
+                <input type="password" id="feishu-secret" placeholder="机器人安全设置中的签名密钥">
+                <p class="form-hint">如果飞书机器人启用了“签名校验”，请填写此密钥；留空则不修改已保存密钥</p>
+              </div>
+
+              <div class="form-group" style="margin-top: 24px;">
+                <button type="button" class="btn-secondary" onclick="app.testFeishu()" id="test-feishu-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-right: 6px; vertical-align: middle;">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  </svg>
+                  测试飞书
+                </button>
+                <p class="form-hint">点击此按钮将发送一条测试消息到飞书群</p>
               </div>
             </div>
             

@@ -1,35 +1,27 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
-import net from 'net';
-import { exec } from 'child_process';
-import http from 'http';
-import https from 'https';
-import tls from 'tls';
-import dns from 'dns';
 import crypto from 'crypto';
 import mysql from 'mysql2/promise';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
-import nodemailer from 'nodemailer';
 import { getLogger } from 'xilore-log4js';
-import { connectDatabase, initializeTables } from './database.js';
+import { connectDatabase, initializeTables } from './core/database.js';
+import { execQuery } from './core/db-utils.js';
+import { escapeHtml } from './core/templates.js';
+import { dispatchMonitorNotification } from './features/notifications.js';
+import { singleCheck } from './features/monitor-checks.js';
+import { buildStatusBars24h } from './features/status-bars.js';
+import { registerGroupRoutes } from './routes/groups.js';
+import { registerSettingsRoutes } from './routes/settings.js';
+import { registerPublicRoutes } from './routes/public.js';
 import type {
   MonitorRow,
-  MonitorGroupRow,
-  SettingsRow,
   CheckHistoryRow,
   UptimeAggRow
-} from './db-types.js';
+} from './core/db-types.js';
 import type { Pool } from 'mysql2/promise';
-import { URL } from "url";
-
-/** mysql2 execute 返回联合类型，统一断言为 [rows|result, fields] 便于使用 */
-async function execQuery(pool: Pool, sql: string, params?: any[]): Promise<[any, any]> {
-  // noinspection ES6MissingAwait
-  return pool.execute(sql, params || []) as Promise<[any, any]>;
-}
 
 declare global {
   namespace Express {
@@ -54,36 +46,6 @@ let pool: Pool | null = null;
 let config: AppConfig | null = null;
 let cleanupTimeout: ReturnType<typeof setTimeout> | null = null;
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
-
-// ============ 模板渲染（邮件 HTML） ============
-const TEMPLATE_DIR = path.join(process.cwd(), 'server', 'templates');
-const templateCache = new Map();
-
-function escapeHtml(input: unknown): string {
-  const str = input === null || input === undefined ? '' : String(input);
-  return str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-}
-
-function loadTemplate(filename: string): string {
-  if (templateCache.has(filename)) return templateCache.get(filename) as string;
-  const p = path.join(TEMPLATE_DIR, filename);
-  const tpl = fs.readFileSync(p, 'utf-8');
-  templateCache.set(filename, tpl);
-  return tpl;
-}
-
-function renderTemplate(filename: string, vars: Record<string, string | number | null | undefined>): string {
-  const tpl = loadTemplate(filename);
-  return tpl.replace(/\{\{\s*([A-Z0-9_]+)\s*}/g, (_: string, key: string) => {
-    const v = Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : '';
-    return v === null || v === undefined ? '' : String(v);
-  });
-}
 
 // ============ 日志（xilore-log4js） ============
 const logger = getLogger('server');
@@ -192,10 +154,10 @@ async function isInitialized() {
   }
 }
 
-// ============ 数据库连接（已迁移到 database.ts）============
+// ============ 数据库连接（已迁移到 core/database.ts）============
 async function connectDatabaseWrapper() {
   if (!config || !config.database) throw new Error('数据库配置不存在');
-  pool = await connectDatabase(config as import('./database.js').AppConfigWithDatabase);
+  pool = await connectDatabase(config as import('./core/database.js').AppConfigWithDatabase);
 }
 
 // ============ 初始化检查中间件 ============
@@ -342,7 +304,7 @@ app.post('/api/install/test-db', async (req: Request, res: Response) => {
     }
 
     conn.release();
-    testPool.end();
+    await testPool.end();
 
     res.json({
       success: true,
@@ -520,550 +482,6 @@ app.get('/api/auth/me', authMiddleware, (req: Request, res: Response) => {
   res.json({user: req.user});
 });
 
-// ============ 监控检测函数 ============
-async function checkHttp(
-    target: string,
-    timeoutSeconds: number,
-    expectedStatus: number = 200,
-    authUsername: string | null = null,
-    authPassword: string | null = null
-): Promise<{ status: string; responseTime: number | null; message: string; statusCode?: number; ssl_days_remaining?: number | null }> {
-  const timeout = timeoutSeconds * 1000;
-  const initialUrl = target.startsWith('http') ? target : `https://${target}`;
-
-  // 支持跟随重定向的 HTTP 请求；优先使用 HEAD 减少流量，不支持时回退 GET
-  // 每次请求用本次开始时间计算 responseTime，避免 HEAD 回退 GET 时把两次往返时间累加导致延迟虚高
-  const makeRequest = (url: string, redirectCount: number = 0, useHead: boolean = true): Promise<{
-    status: string;
-    responseTime: number | null;
-    message: string;
-    statusCode?: number;
-    ssl_days_remaining?: number | null;
-  }> => {
-    const requestStartTime = Date.now();
-    return new Promise((resolve) => {
-      if (redirectCount > 5) {
-        resolve({
-          status: 'down',
-          responseTime: null,
-          message: '重定向次数过多',
-          ssl_days_remaining: null
-        });
-        return;
-      }
-
-      let parsedUrl: URL;
-      try {
-        parsedUrl = new URL(url);
-      } catch (err) {
-        logger.error(`URL解析失败 ${JSON.stringify({url, error: err.message, redirectCount})}`);
-        resolve({
-          status: 'down',
-          responseTime: null,
-          message: `无效的 URL: ${err.message}`,
-          ssl_days_remaining: null
-        });
-        return;
-      }
-
-      const protocol = parsedUrl.protocol === 'https:' ? https : http;
-
-      // 额外做一次独立的 DNS 解析用于观测 DNS 延迟（不参与 responseTime 统计）
-      // 为了避免阻塞请求本身，这里不等待解析结果，仅在解析完成后按需输出日志
-      try {
-        const dnsStart = Date.now();
-        dns.lookup(parsedUrl.hostname, (dnsErr) => {
-          const dnsTime = Date.now() - dnsStart;
-          if (dnsErr) {
-            logger.warn(`DNS 解析失败（独立检测） ${JSON.stringify({
-              host: parsedUrl.hostname,
-              error: dnsErr.message
-            })}`);
-            return;
-          }
-          // 只在 DNS 明显偏慢时打印，避免日志过多；阈值可根据需要调整
-          if (dnsTime > 100) {
-            logger.warn(`DNS 解析耗时（独立检测） ${JSON.stringify({
-              host: parsedUrl.hostname,
-              dnsTimeMs: dnsTime
-            })}`);
-          }
-        });
-      } catch (e) {
-        logger.warn(`DNS 解析监控异常（独立检测） ${JSON.stringify({
-          host: parsedUrl.hostname,
-          error: (e as Error).message
-        })}`);
-      }
-
-      const headers = {
-        'User-Agent': 'Xilore UptimeBot/1.0'
-      };
-
-      // 添加 Basic Auth 认证头
-      if (authUsername && authPassword) {
-        const auth = Buffer.from(`${authUsername}:${authPassword}`).toString('base64');
-        headers['Authorization'] = `Basic ${auth}`;
-      }
-
-      const method = useHead ? 'HEAD' : 'GET';
-      const options = {
-        hostname: parsedUrl.hostname,
-        port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
-        path: parsedUrl.pathname + parsedUrl.search,
-        method,
-        headers
-      };
-
-      const req = protocol.request(options, (res: http.IncomingMessage) => {
-        const responseTime = Date.now() - requestStartTime;
-
-        // 处理重定向 (301, 302, 303, 307, 308)
-        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
-          res.destroy();
-          // 构建重定向 URL
-          let redirectUrl = res.headers.location;
-          if (!redirectUrl.startsWith('http')) {
-            // 相对路径重定向：确保以 / 开头
-            if (!redirectUrl.startsWith('/')) {
-              redirectUrl = '/' + redirectUrl;
-            }
-            redirectUrl = `${parsedUrl.protocol}//${parsedUrl.host}${redirectUrl}`;
-          }
-          // 递归跟随重定向（继续用 HEAD 以节省流量）
-          resolve(makeRequest(redirectUrl, redirectCount + 1, useHead));
-          return;
-        }
-
-        // HEAD 不被支持时回退到 GET（仅重试当前 URL 一次，不读 body）
-        if (useHead && (res.statusCode === 405 || res.statusCode === 501)) {
-          res.destroy();
-          resolve(makeRequest(url, redirectCount, false));
-          return;
-        }
-
-        // 检查期望状态码
-        // expectedStatus 为 0 表示接受任何 2xx 状态码
-        let success: boolean;
-        if (expectedStatus === 0) {
-          success = res.statusCode >= 200 && res.statusCode < 300;
-        } else {
-          success = res.statusCode === expectedStatus;
-        }
-
-        // 只有当检测成功（实际状态码匹配期望状态码）时才记录响应时间
-        // 如果状态码不匹配期望值，不记录响应时间
-        const shouldRecordTime = success;
-
-        // 根据实际连接是否为 TLS 读取证书剩余天数（不依赖 URL 字符串，重定向到 HTTPS 时也能正确识别）
-        let ssl_days_remaining: number | null = null;
-        if (res.socket && typeof (res.socket as tls.TLSSocket).getPeerCertificate === 'function') {
-          try {
-            const cert = (res.socket as tls.TLSSocket).getPeerCertificate();
-            if (cert && cert.valid_to) {
-              const validTo = new Date(cert.valid_to);
-              const now = new Date();
-              ssl_days_remaining = Math.floor((validTo.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
-            }
-          } catch (_) {
-            // 忽略证书解析错误
-          }
-        }
-
-        resolve({
-          status: success ? 'up' : 'down',
-          responseTime: shouldRecordTime ? responseTime : null,
-          message: `HTTP ${res.statusCode}`,
-          statusCode: res.statusCode,
-          ssl_days_remaining
-        });
-        res.destroy();
-      });
-
-      req.on('error', (err: Error) => {
-        // 网络错误（DNS解析失败、连接错误等）不记录响应时间
-        resolve({
-          status: 'down',
-          responseTime: null,
-          message: err.message,
-          ssl_days_remaining: null
-        });
-      });
-
-      req.setTimeout(timeout);
-      req.on('timeout', () => {
-        req.destroy();
-        resolve({
-          status: 'down',
-          responseTime: null,
-          message: '请求超时',
-          ssl_days_remaining: null
-        });
-      });
-
-      req.end();
-    });
-  };
-
-  return makeRequest(initialUrl);
-}
-
-async function checkTcp(target: string, port: number, timeoutSeconds: number): Promise<{ status: string; responseTime: number | null; message: string }> {
-  const timeout = timeoutSeconds * 1000;
-  return new Promise((resolve: (v: { status: string; responseTime: number | null; message: string }) => void) => {
-    const startTime = Date.now();
-    const socket = new net.Socket();
-
-    socket.setTimeout(timeout);
-
-    socket.on('connect', () => {
-      const responseTime = Date.now() - startTime;
-      socket.destroy();
-      resolve({
-        status: 'up',
-        responseTime,
-        message: `端口 ${port} 开放`
-      });
-    });
-
-    socket.on('timeout', () => {
-      socket.destroy();
-      resolve({
-        status: 'down',
-        responseTime: null,
-        message: '连接超时'
-      });
-    });
-
-    socket.on('error', (err: Error) => {
-      socket.destroy();
-      resolve({
-        status: 'down',
-        responseTime: null,
-        message: err.message
-      });
-    });
-
-    socket.connect(port, target);
-  });
-}
-
-async function checkPing(target: string, timeoutSeconds: number): Promise<{ status: string; responseTime: number | null; message: string }> {
-  const timeout = timeoutSeconds * 1000;
-  const isWin = process.platform === 'win32';
-  // 每次检测发 3 个包，至少 1 个成功即视为可用，减少单次丢包导致的误判
-  const pingCount = 3;
-  const cmd = isWin
-    ? `ping -n ${pingCount} -w ${timeout} ${target}`
-    : `ping -c ${pingCount} -W ${timeoutSeconds} ${target}`;
-
-  return new Promise((resolve: (v: { status: string; responseTime: number | null; message: string }) => void) => {
-    const startTime = Date.now();
-    exec(cmd, {timeout: timeout * pingCount + 5000}, (error: { code?: string | number; signal?: string; message?: string } | null, stdout: string | Buffer, stderr: string | Buffer) => {
-      const output = String(stdout || '') + String(stderr || '');
-      // 1) 进程报错：超时、不可达等
-      if (error) {
-        const isTimeout = String(error.code) === 'ETIMEDOUT' || error.signal === 'SIGTERM' ||
-          (error.message && error.message.includes('timeout'));
-        resolve({
-          status: 'down',
-          responseTime: null,
-          message: isTimeout ? 'Ping 超时' : '主机不可达'
-        });
-        return;
-      }
-      // 2) Windows：超时时仍常返回 exitCode 0，必须根据输出判断
-      const timeoutOrLoss = /Request timed out|请求超时|timed out|100% loss|Lost\s*=\s*\d+\s*\(\s*100\s*%\s*\)|Received\s*=\s*0/i.test(output);
-      const hasReply = /TTL=|time\s*[=<]\s*\d|时间\s*[=<]\s*\d|=\s*\d+(?:\.\d+)?\s*ms/i.test(output);
-      if (timeoutOrLoss && !hasReply) {
-        resolve({
-          status: 'down',
-          responseTime: null,
-          message: 'Ping 超时'
-        });
-        return;
-      }
-      if (!hasReply) {
-        resolve({
-          status: 'down',
-          responseTime: null,
-          message: '无有效响应'
-        });
-        return;
-      }
-      // 3) 从输出中解析响应时间（取第一个成功回复的延迟）
-      let pingTime = Date.now() - startTime;
-      const timeMatch = output.match(/[=<](\d+)(?:\.\d+)?(?:\s*)?(?:ms|毫秒)/i) || output.match(/time\s*[=<]\s*(\d+)/i);
-      if (timeMatch) {
-        pingTime = parseInt(timeMatch[1], 10);
-      }
-      resolve({
-        status: 'up',
-        responseTime: pingTime,
-        message: 'Ping 成功'
-      });
-    });
-  });
-}
-
-// 发送邮件通知
-async function sendEmailNotification(
-  monitor: MonitorRow,
-  oldStatus: string,
-  newStatus: string,
-  message: string,
-  responseTime: number | null
-): Promise<void> {
-  try {
-    // 获取邮件配置
-    const [smtpRows] = await execQuery(pool!, 'SELECT key_name, value FROM settings WHERE key_name IN (?, ?, ?, ?, ?, ?)',
-      ['smtpHost', 'smtpPort', 'smtpUser', 'smtpPassword', 'smtpFrom', 'smtpSecure']);
-
-    if (smtpRows.length === 0 || !smtpRows.find((r: SettingsRow) => r.key_name === 'smtpHost' && r.value)) {
-      logger.warn(`邮件配置未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
-      return;
-    }
-
-    const config: { host?: string; port?: number; user?: string; password?: string; from?: string; secure?: boolean } = {};
-    smtpRows.forEach((row: SettingsRow) => {
-      const key = row.key_name;
-      const value = row.value;
-      if (key === 'smtpHost') config.host = value;
-      else if (key === 'smtpPort') config.port = parseInt(value) || 587;
-      else if (key === 'smtpUser') config.user = value;
-      else if (key === 'smtpPassword') config.password = value;
-      else if (key === 'smtpFrom') config.from = value;
-      else if (key === 'smtpSecure') config.secure = value === '1' || value === 'true';
-    });
-
-    if (!config.host || !config.user || !config.password || !config.from) {
-      logger.warn(`邮件配置不完整，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
-      return;
-    }
-
-    // 获取管理员邮箱
-    const [userRows] = await execQuery(pool!, 'SELECT email FROM users WHERE role = ? LIMIT 1', ['admin']);
-    if (userRows.length === 0 || !userRows[0].email) {
-      logger.warn(`管理员邮箱未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
-      return;
-    }
-
-    const toEmail = userRows[0].email;
-
-    // 创建邮件传输器
-    const transporter = (nodemailer as any).createTransport({
-      host: config.host,
-      port: config.port,
-      secure: config.secure || false,
-      auth: {
-        user: config.user,
-        pass: config.password
-      }
-    });
-
-    // 构建邮件内容
-    const statusText = newStatus === 'up' ? '已恢复' : '已离线';
-    const statusColor = newStatus === 'up' ? '#10b981' : '#ef4444';
-    const statusBgColor = newStatus === 'up' ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)' : 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
-    const statusIcon = newStatus === 'up' ? '✓' : '✕';
-    const oldStatusText = oldStatus === 'up' ? '在线' : oldStatus === 'down' ? '离线' : '未知';
-    const newStatusText = newStatus === 'up' ? '在线' : '离线';
-    const checkTime = new Date().toLocaleString('zh-CN');
-    const targetAddress = monitor.target + (monitor.port ? ':' + monitor.port : '');
-    const typeText = monitor.type.toUpperCase();
-
-    const subject = `${newStatus === 'up' ? '✅' : '❌'} 监控告警: ${monitor.name} ${statusText}`;
-
-    const responseTimeText = (responseTime !== null && responseTime !== undefined)
-      ? `${responseTime}ms`
-      : '超时';
-
-    const html = renderTemplate('monitor-status-email.template', {
-      MONITOR_NAME: escapeHtml(monitor.name),
-      STATUS_BG_COLOR: statusBgColor,
-      STATUS_COLOR: statusColor,
-      STATUS_ICON: escapeHtml(statusIcon),
-      STATUS_TEXT: escapeHtml(statusText),
-      TARGET_ADDRESS: escapeHtml(targetAddress),
-      TYPE_TEXT: escapeHtml(typeText),
-      OLD_STATUS_TEXT: escapeHtml(oldStatusText),
-      NEW_STATUS_TEXT: escapeHtml(newStatusText),
-      RESPONSE_TIME_TEXT: escapeHtml(responseTimeText),
-      DETAIL_MESSAGE: escapeHtml(message || '无'),
-      CHECK_TIME: escapeHtml(checkTime),
-      YEAR: String(new Date().getFullYear())
-    });
-
-    // 发送邮件
-    await transporter.sendMail({
-      from: config.from,
-      to: toEmail,
-      subject: subject,
-      html: html
-    });
-
-    logger.info(`邮件通知发送成功 ${JSON.stringify({monitorId: monitor.id, to: toEmail})}`);
-  } catch (error) {
-    logger.error(`发送邮件通知失败 ${JSON.stringify({monitorId: monitor.id, error: error.message})}`);
-    throw error;
-  }
-}
-
-// 发送 Webhook 通知
-async function sendWebhookNotification(
-  monitor: MonitorRow,
-  oldStatus: string,
-  newStatus: string,
-  message: string,
-  responseTime: number | null
-): Promise<void> {
-  try {
-    // 获取 Webhook 配置
-    const [webhookRows] = await execQuery(pool!,
-      'SELECT key_name, value FROM settings WHERE key_name IN (?, ?, ?)',
-      ['webhookUrl', 'webhookMethod', 'webhookHeaders']
-    );
-
-    if (webhookRows.length === 0 || !webhookRows.find((r: SettingsRow) => r.key_name === 'webhookUrl' && r.value)) {
-      logger.warn(`Webhook 配置未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
-      return;
-    }
-
-    const config: { url?: string; method?: string; headers?: Record<string, string> } = {};
-    webhookRows.forEach((row: SettingsRow) => {
-      const key = row.key_name;
-      const value = row.value;
-      if (key === 'webhookUrl') config.url = value;
-      else if (key === 'webhookMethod') config.method = value || 'POST';
-      else if (key === 'webhookHeaders') {
-        try {
-          config.headers = value ? JSON.parse(value) : {};
-        } catch (e) {
-          config.headers = {};
-        }
-      }
-    });
-
-    if (!config.url) {
-      logger.warn(`Webhook URL 未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
-      return;
-    }
-
-    const method = (config.method || 'POST').toUpperCase();
-    const headers = {
-      'Content-Type': 'application/json',
-      'User-Agent': 'Xilore-Uptime/1.0',
-      ...config.headers
-    };
-
-    // 构建请求体
-    const payload = {
-      event: 'monitor_status_changed',
-      monitor: {
-        id: monitor.id,
-        name: monitor.name,
-        type: monitor.type,
-        target: monitor.target,
-        port: monitor.port
-      },
-      status: {
-        old: oldStatus || 'unknown',
-        new: newStatus,
-        text: newStatus === 'up' ? '在线' : newStatus === 'warning' ? '警告' : '离线'
-      },
-      check: {
-        responseTime: responseTime,
-        message: message || '无',
-        timestamp: new Date().toISOString(),
-        time: new Date().toLocaleString('zh-CN')
-      }
-    };
-
-    // 发送 Webhook 请求
-    const parsedUrl = new URL(config.url!);
-    const httpModule = parsedUrl.protocol === 'https:' ? https : http;
-
-    const requestOptions = {
-      hostname: parsedUrl.hostname,
-      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
-      path: parsedUrl.pathname + parsedUrl.search,
-      method: method,
-      headers: headers
-    };
-
-    await new Promise((resolve: (v?: void) => void, reject: (e: Error) => void) => {
-      const req = httpModule.request(requestOptions, (res: http.IncomingMessage) => {
-        let data = '';
-        res.on('data', (chunk: Buffer | string) => {
-          data += chunk;
-        });
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            logger.info(`Webhook 通知发送成功 ${JSON.stringify({monitorId: monitor.id, statusCode: res.statusCode})}`);
-            resolve(undefined);
-          } else {
-            logger.warn(`Webhook 通知返回非成功状态码 ${JSON.stringify({
-              monitorId: monitor.id,
-              statusCode: res.statusCode
-            })}`);
-            resolve(undefined); // 不抛出错误，只记录警告
-          }
-        });
-      });
-
-      req.on('error', (err: Error) => {
-        logger.error(`Webhook 请求失败 ${JSON.stringify({monitorId: monitor.id, error: err.message})}`);
-        reject(err);
-      });
-
-      req.setTimeout(10000); // 10秒超时
-      req.on('timeout', () => {
-        req.destroy();
-        logger.error(`Webhook 请求超时 ${JSON.stringify({monitorId: monitor.id})}`);
-        reject(new Error('Request timeout'));
-      });
-
-      if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
-        req.write(JSON.stringify(payload));
-      }
-
-      req.end();
-    });
-
-  } catch (error) {
-    logger.error(`发送 Webhook 通知失败 ${JSON.stringify({monitorId: monitor.id, error: error.message})}`);
-    throw error;
-  }
-}
-
-// 单次检测（HTTP 类型且为 HTTPS 时可能返回 ssl_days_remaining）
-async function singleCheck(monitor: MonitorRow): Promise<{ status: string; responseTime: number | null; message: string; ssl_days_remaining?: number | null }> {
-  const timeout = monitor.timeout_seconds || 10;
-  const expectedStatus = monitor.expected_status || 200;
-
-  // 调试：打印检测参数
-  logger.debug(`执行检测 ${JSON.stringify({
-    id: monitor.id,
-    name: monitor.name,
-    type: monitor.type,
-    target: monitor.target,
-    targetType: typeof monitor.target,
-    timeout,
-    expectedStatus
-  })}`);
-
-  switch (monitor.type) {
-    case 'http':
-      return await checkHttp(monitor.target, timeout, expectedStatus, monitor.auth_username, monitor.auth_password);
-    case 'tcp':
-      return await checkTcp(monitor.target, monitor.port, timeout);
-    case 'ping':
-      return await checkPing(monitor.target, timeout);
-    default:
-      return {status: 'unknown', responseTime: 0, message: '未知类型'};
-  }
-}
-
 // 带重试的检测
 async function performCheck(monitor: MonitorRow): Promise<{ status: string; responseTime: number | null; message: string; ssl_days_remaining?: number | null }> {
   const maxRetries = Math.min(monitor.retries || 0, 3);
@@ -1072,7 +490,7 @@ async function performCheck(monitor: MonitorRow): Promise<{ status: string; resp
   let retryCount = 0; // 实际重试次数
 
   do {
-    result = await singleCheck(monitor);
+    result = await singleCheck(monitor, logger);
     if (result.status === 'up') break;
     attempt++;
     if (attempt <= maxRetries) {
@@ -1110,26 +528,15 @@ async function performCheck(monitor: MonitorRow): Promise<{ status: string; resp
     );
   }
 
-  // 检测状态变化，如果启用了邮件通知，则发送邮件（警告状态不发邮件）
-  if (monitor.email_notification && oldStatus !== result.status && historyStatus !== 'warning') {
-    // 异步发送邮件，不阻塞检测流程
-    sendEmailNotification(monitor, oldStatus, result.status, result.message, result.responseTime).catch((err: Error) => {
-      logger.error(`发送邮件通知失败 ${JSON.stringify({monitorId: monitor.id, error: err.message})}`);
-    });
-  }
-
-  // 检测状态变化或出现警告状态时，如果启用了 Webhook 通知，则发送 Webhook（警告状态也发）
-  if (monitor.webhook_notification) {
-    if (historyStatus === 'warning') {
-      sendWebhookNotification(monitor, oldStatus, 'warning', result.message, result.responseTime).catch((err: Error) => {
-        logger.error(`发送 Webhook 通知失败 ${JSON.stringify({monitorId: monitor.id, error: err.message})}`);
-      });
-    } else if (oldStatus !== result.status) {
-      sendWebhookNotification(monitor, oldStatus, result.status, result.message, result.responseTime).catch((err: Error) => {
-        logger.error(`发送 Webhook 通知失败 ${JSON.stringify({monitorId: monitor.id, error: err.message})}`);
-      });
-    }
-  }
+  // 状态变化或 warning 统一分发到已启用的通知渠道。
+  dispatchMonitorNotification({pool: pool!, logger}, {
+    type: 'status',
+    monitor,
+    oldStatus,
+    newStatus: historyStatus === 'warning' ? 'warning' : result.status,
+    message: result.message,
+    responseTime: result.responseTime
+  });
 
   // 记录历史（超时时 responseTime 为 null）
   // 如果重试后才成功，历史记录中使用warning状态
@@ -1162,257 +569,9 @@ async function performCheck(monitor: MonitorRow): Promise<{ status: string; resp
 // ============ API 路由（需要认证）============
 
 // ============ 分组 API ============
-app.get('/api/groups', authMiddleware, async (req: Request, res: Response) => {
-  try {
-    const [rows] = await execQuery(pool!,'SELECT id, name, sort_order FROM monitor_groups ORDER BY sort_order, id');
-    res.json(rows.map((r: MonitorGroupRow) => ({
-      id: r.id,
-      name: r.name,
-      sort_order: r.sort_order ?? 0
-    })));
-  } catch (e: unknown) {
-    logger.error(`API 错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message, user: req.user?.username})}`);
-    res.status(500).json({error: (e as Error).message});
-  }
-});
-
-app.post('/api/groups', authMiddleware, async (req: Request, res: Response) => {
-  const {name, description} = req.body;
-
-  if (!name) {
-    logger.warn(`创建分组失败 - 名称为空 ${JSON.stringify({user: req.user?.username})}`);
-    return res.status(400).json({error: '分组名称不能为空'});
-  }
-
-  try {
-    // 检查名称是否已存在
-    const [existing] = await execQuery(pool!,
-      'SELECT id FROM monitor_groups WHERE name = ?',
-      [name]
-    );
-
-    if (existing.length > 0) {
-      logger.warn(`创建分组失败 - 名称重复 ${JSON.stringify({name, user: req.user?.username})}`);
-      return res.status(400).json({error: '分组名称已存在'});
-    }
-
-    const [maxRows] = await execQuery(pool!,'SELECT COALESCE(MAX(sort_order), 0) AS max_order FROM monitor_groups');
-    const nextOrder = (maxRows[0]?.max_order || 0) + 1;
-    const [result] = await execQuery(pool!,
-      'INSERT INTO monitor_groups (name, description, sort_order) VALUES (?, ?, ?)',
-      [name, description || null, nextOrder]
-    );
-    logger.info(`创建分组成功 ${JSON.stringify({groupId: result.insertId, name, user: req.user?.username})}`);
-    // 返回最小必要字段
-    res.json({id: result.insertId, name, sort_order: nextOrder});
-  } catch (e) {
-    logger.error(`创建分组失败 ${JSON.stringify({name, error: e.message, user: req.user?.username})}`);
-    res.status(500).json({error: (e as Error).message});
-  }
-});
-
-app.put('/api/groups/:id', authMiddleware, async (req: Request, res: Response) => {
-  const {name, description, sort_order} = req.body;
-  const id = req.params.id;
-
-  try {
-    // 如果提供了名称，检查是否与其他分组重复（排除当前分组）
-    if (name !== undefined && name !== null) {
-      const [existing] = await execQuery(pool!,
-        'SELECT id FROM monitor_groups WHERE name = ? AND id != ?',
-        [name, id]
-      );
-
-      if (existing.length > 0) {
-        logger.warn(`更新分组失败 - 名称重复 ${JSON.stringify({groupId: id, name, user: req.user?.username})}`);
-        return res.status(400).json({error: '分组名称已存在'});
-      }
-    }
-
-    // 构建更新语句
-    const updates = [];
-    const values = [];
-
-    if (name !== undefined && name !== null) {
-      updates.push('name = ?');
-      values.push(name);
-    }
-
-    if (description !== undefined) {
-      updates.push('description = ?');
-      values.push(description);
-    }
-
-    if (sort_order !== undefined && sort_order !== null) {
-      updates.push('sort_order = ?');
-      values.push(sort_order);
-    }
-
-    if (updates.length === 0) {
-      // 没有任何更新
-      const [group] = await execQuery(pool!,'SELECT id, name, sort_order FROM monitor_groups WHERE id = ?', [id]);
-      return res.json(group[0] ? {
-        id: group[0].id,
-        name: group[0].name,
-        sort_order: group[0].sort_order ?? 0
-      } : null);
-    }
-
-    values.push(id);
-    await execQuery(pool!,
-      `UPDATE monitor_groups
-       SET ${updates.join(', ')}
-       WHERE id = ?`,
-      values
-    );
-
-    // 返回更新后的分组信息
-    const [updated] = await execQuery(pool!,'SELECT id, name, sort_order FROM monitor_groups WHERE id = ?', [id]);
-
-    logger.info(`更新分组成功 ${JSON.stringify({groupId: id, name, sort_order, user: req.user?.username})}`);
-    res.json(updated[0] ? {
-      id: updated[0].id,
-      name: updated[0].name,
-      sort_order: updated[0].sort_order ?? 0
-    } : null);
-  } catch (e) {
-    logger.error(`更新分组失败 ${JSON.stringify({groupId: id, error: e.message, user: req.user?.username})}`);
-    res.status(500).json({error: (e as Error).message});
-  }
-});
-
-app.delete('/api/groups/:id', authMiddleware, async (req: Request, res: Response) => {
-  const id = req.params.id;
-
-  try {
-    // 将该分组下的监控移到"未分组"
-    const [updateResult] = await execQuery(pool!,'UPDATE monitors SET group_id = NULL WHERE group_id = ?', [id]);
-    await execQuery(pool!,'DELETE FROM monitor_groups WHERE id = ?', [id]);
-    logger.info(`删除分组成功 ${JSON.stringify({
-      groupId: id,
-      affectedMonitors: updateResult.affectedRows,
-      user: req.user?.username
-    })}`);
-    res.json({success: true});
-  } catch (e) {
-    logger.error(`删除分组失败 ${JSON.stringify({groupId: id, error: e.message, user: req.user?.username})}`);
-    res.status(500).json({error: (e as Error).message});
-  }
-});
+registerGroupRoutes(app, {getPool: () => pool!, logger, authMiddleware});
 
 // ============ 监控 API ============
-function buildStatusBars24h(monitorIds: number[], historyRows: CheckHistoryRow[]): { monitorId: number; statusBar24h: any[] }[] {
-  const now = new Date();
-  const endMs = now.getTime();
-  const oneHourMs = 60 * 60 * 1000;
-  const segmentMs = 5 * 60 * 1000; // 12 个 5 分钟段
-  const start24hMs = endMs - 24 * oneHourMs;
-
-  const bucketsByMonitor = new Map();
-  for (const id of monitorIds) {
-    bucketsByMonitor.set(id, Array.from({length: 24}, () => []));
-  }
-
-  for (const row of historyRows) {
-    // 兼容 MySQL 返回 string 的情况，统一转 number 做 Map key
-    const monitorId = Number(row.monitor_id);
-    const buckets = bucketsByMonitor.get(monitorId);
-    if (!buckets) continue;
-
-    const checkedAt = row.checked_at instanceof Date ? row.checked_at : new Date(row.checked_at);
-    const t = checkedAt.getTime();
-    if (Number.isNaN(t) || t < start24hMs || t >= endMs) continue;
-
-    const hourIdx = Math.floor((t - start24hMs) / oneHourMs);
-    if (hourIdx < 0 || hourIdx >= 24) continue;
-    buckets[hourIdx].push(row);
-  }
-
-  const priority = {down: 3, warning: 2, up: 1};
-
-  return monitorIds.map((id) => {
-    const buckets = bucketsByMonitor.get(id) || Array.from({length: 24}, () => []);
-    const statusBar24h = buckets.map((records: CheckHistoryRow[], hourIdx: number) => {
-      const hourStartMs = start24hMs + hourIdx * oneHourMs;
-      const hourEndMs = hourStartMs + oneHourMs;
-
-      const segments = new Array(12).fill(null);
-      let upChecks = 0;
-      let downChecks = 0;
-      let warningChecks = 0;
-      let lastUp = null;
-      let lastWarning = null;
-      let lastDown = null;
-
-      for (const r of records) {
-        const checkedAt = r.checked_at instanceof Date ? r.checked_at : new Date(r.checked_at);
-        const t = checkedAt.getTime();
-        if (Number.isNaN(t) || t < hourStartMs || t >= hourEndMs) continue;
-
-        const segIdx = Math.min(11, Math.max(0, Math.floor((t - hourStartMs) / segmentMs)));
-        const current = segments[segIdx];
-        if (!current || priority[r.status] > priority[current]) {
-          segments[segIdx] = r.status;
-        }
-
-        if (r.status === "up") {
-          upChecks++;
-          lastUp = r;
-        } else if (r.status === "down") {
-          downChecks++;
-          lastDown = r;
-        } else if (r.status === "warning") {
-          warningChecks++;
-          lastWarning = r;
-        }
-      }
-
-      // 向前填充空缺（使用最近一次状态），避免检测间隔大时出现灰块
-      let lastKnown = null;
-      for (let i = 0; i < segments.length; i++) {
-        if (segments[i]) {
-          lastKnown = segments[i];
-        } else if (lastKnown) {
-          segments[i] = lastKnown;
-        }
-      }
-
-      // 向后填充开头空缺（使用最早一次状态）
-      const firstKnownIndex = segments.findIndex((s) => s !== null);
-      if (firstKnownIndex > 0) {
-        for (let i = 0; i < firstKnownIndex; i++) {
-          segments[i] = segments[firstKnownIndex];
-        }
-      }
-
-      const totalChecks = records.length;
-      const uptime = totalChecks > 0 ? ((upChecks + warningChecks) / totalChecks) * 100 : null;
-      const status = downChecks > 0 ? "down" : warningChecks > 0 ? "warning" : upChecks > 0 ? "up" : null;
-
-      // tooltip 详情优先展示 down，其次 warning，再其次 up（取最后一次）
-      const chosen = lastDown || lastWarning || lastUp;
-      const chosenTime = chosen?.checked_at
-        ? (chosen.checked_at instanceof Date ? chosen.checked_at : new Date(chosen.checked_at))
-        : null;
-
-      return {
-        status,
-        startTime: new Date(hourStartMs).toISOString(),
-        endTime: new Date(hourEndMs).toISOString(),
-        checkTime: chosenTime ? chosenTime.toISOString() : null,
-        message: chosen?.message || null,
-        totalChecks,
-        downChecks,
-        warningChecks,
-        uptime,
-        segments,
-      };
-    });
-
-    return {monitorId: id, statusBar24h};
-  });
-}
-
 app.get('/api/monitors', authMiddleware, async (req: Request, res: Response) => {
   try {
     const [rows] = await execQuery(pool!,
@@ -1434,6 +593,7 @@ app.get('/api/monitors', authMiddleware, async (req: Request, res: Response) => 
               is_public,
               email_notification,
               webhook_notification,
+              feishu_notification,
               auth_username,
               (auth_password IS NOT NULL AND auth_password <> '') AS auth_password_set
        FROM monitors
@@ -1528,6 +688,7 @@ app.get('/api/monitors/:id', authMiddleware, async (req: Request, res: Response)
               is_public,
               email_notification,
               webhook_notification,
+              feishu_notification,
               auth_username,
               (auth_password IS NOT NULL AND auth_password <> '') AS auth_password_set
        FROM monitors
@@ -1561,6 +722,7 @@ app.post('/api/monitors', authMiddleware, async (req: Request, res: Response) =>
     is_public,
     email_notification,
     webhook_notification,
+    feishu_notification,
     auth_username,
     auth_password
   } = req.body;
@@ -1583,8 +745,8 @@ app.post('/api/monitors', authMiddleware, async (req: Request, res: Response) =>
 
   try {
     const [result] = await execQuery(pool!,
-      'INSERT INTO monitors (name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status, group_id, enabled, is_public, email_notification, webhook_notification, auth_username, auth_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [name, type, target, port || null, interval_seconds || 60, timeout_seconds || 10, validRetries, validExpectedStatus, group_id || null, 1, is_public ? 1 : 0, email_notification ? 1 : 0, webhook_notification ? 1 : 0, validAuthUsername, validAuthPassword]
+      'INSERT INTO monitors (name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status, group_id, enabled, is_public, email_notification, webhook_notification, feishu_notification, auth_username, auth_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, type, target, port || null, interval_seconds || 60, timeout_seconds || 10, validRetries, validExpectedStatus, group_id || null, 1, is_public ? 1 : 0, email_notification ? 1 : 0, webhook_notification ? 1 : 0, feishu_notification ? 1 : 0, validAuthUsername, validAuthPassword]
     );
 
     const [rows] = await execQuery(pool!,
@@ -1605,6 +767,7 @@ app.post('/api/monitors', authMiddleware, async (req: Request, res: Response) =>
               is_public,
               email_notification,
               webhook_notification,
+              feishu_notification,
               auth_username,
               (auth_password IS NOT NULL AND auth_password <> '') AS auth_password_set
        FROM monitors
@@ -1623,6 +786,15 @@ app.post('/api/monitors', authMiddleware, async (req: Request, res: Response) =>
       groupId: group_id || null,
       user: req.user?.username
     })}`);
+
+    if (rows[0]) {
+      dispatchMonitorNotification({pool: pool!, logger}, {
+        type: 'create',
+        monitor: rows[0],
+        newStatus: rows[0].status || 'unknown',
+        message: `监控已创建：${rows[0].name}`
+      });
+    }
 
     res.status(201).json(rows[0] ? {
       ...rows[0],
@@ -1649,6 +821,7 @@ app.put('/api/monitors/:id', authMiddleware, async (req: Request, res: Response)
     is_public,
     email_notification,
     webhook_notification,
+    feishu_notification,
     auth_username,
     auth_password
   } = req.body;
@@ -1718,6 +891,7 @@ app.put('/api/monitors/:id', authMiddleware, async (req: Request, res: Response)
       is_public !== undefined ? (is_public ? 1 : 0) : null,
       email_notification !== undefined ? (email_notification ? 1 : 0) : null,
       webhook_notification !== undefined ? (webhook_notification ? 1 : 0) : null,
+      feishu_notification !== undefined ? (feishu_notification ? 1 : 0) : null,
       finalAuthUsername,
       finalAuthPassword,
       id
@@ -1735,10 +909,11 @@ app.put('/api/monitors/:id', authMiddleware, async (req: Request, res: Response)
            expected_status      = COALESCE(?, expected_status),
            group_id             = ?,
            enabled              = COALESCE(?, enabled),
-           is_public            = COALESCE(?, is_public),
-           email_notification   = COALESCE(?, email_notification),
-           webhook_notification = COALESCE(?, webhook_notification),
-           auth_username        = ?,
+            is_public            = COALESCE(?, is_public),
+            email_notification   = COALESCE(?, email_notification),
+            webhook_notification = COALESCE(?, webhook_notification),
+            feishu_notification  = COALESCE(?, feishu_notification),
+            auth_username        = ?,
            auth_password        = ?
        WHERE id = ?`,
       params
@@ -1763,6 +938,7 @@ app.put('/api/monitors/:id', authMiddleware, async (req: Request, res: Response)
               is_public,
               email_notification,
               webhook_notification,
+              feishu_notification,
               auth_username,
               (auth_password IS NOT NULL AND auth_password <> '') AS auth_password_set
        FROM monitors
@@ -1796,7 +972,10 @@ app.delete('/api/monitors/:id', authMiddleware, async (req: Request, res: Respon
   const id = parseInt(req.params.id);
   try {
     // 获取监控信息用于日志
-    const [monitor] = await execQuery(pool!,'SELECT name, type, target FROM monitors WHERE id = ?', [id]);
+    const [monitor] = await execQuery(pool!,'SELECT * FROM monitors WHERE id = ?', [id]);
+    if (monitor.length === 0) {
+      return res.status(404).json({error: '监控不存在'});
+    }
 
     if (checkIntervals.has(id)) {
       clearInterval(checkIntervals.get(id));
@@ -1814,6 +993,13 @@ app.delete('/api/monitors/:id', authMiddleware, async (req: Request, res: Respon
       type: monitor[0]?.type || '未知',
       user: req.user?.username
     })}`);
+
+    dispatchMonitorNotification({pool: pool!, logger}, {
+      type: 'delete',
+      monitor: monitor[0],
+      oldStatus: monitor[0].status || 'unknown',
+      message: `监控已删除：${monitor[0].name}`
+    });
 
     res.json({success: true});
   } catch (e) {
@@ -2102,562 +1288,15 @@ app.get('/api/monitors/:id/history', authMiddleware, async (req: Request, res: R
 });
 
 // ============ 设置 API ============
-app.get('/api/settings', authMiddleware, async (req: Request, res: Response) => {
-  try {
-    if (!pool) {
-      return res.json({
-        publicPageTitle: '服务状态监控',
-        logRetentionDays: 30,
-        adminEmail: null,
-        logTableSize: null,
-        smtpPassword: '',
-        smtpPasswordSet: false
-      });
-    }
-
-    try {
-      // 获取公开展示页面标题
-      const [titleRows] = await execQuery(pool!,
-        'SELECT value FROM settings WHERE key_name = ?',
-        ['publicPageTitle']
-      );
-
-      const publicPageTitle = titleRows.length > 0 && titleRows[0].value
-        ? titleRows[0].value
-        : '服务状态监控';
-
-      // 获取日志保留天数
-      const [retentionRows] = await execQuery(pool!,
-        'SELECT value FROM settings WHERE key_name = ?',
-        ['logRetentionDays']
-      );
-
-      const logRetentionDays = retentionRows.length > 0 && retentionRows[0].value
-        ? parseInt(retentionRows[0].value, 10)
-        : 30;
-
-      // 获取当前管理员邮箱
-      let adminEmail = null;
-      if (req.user && req.user.username) {
-        const [userRows] = await execQuery(pool!,
-          'SELECT email FROM users WHERE username = ? AND role = ?',
-          [req.user.username, 'admin']
-        );
-        if (userRows.length > 0) {
-          adminEmail = userRows[0].email || null;
-        }
-      }
-
-      // 获取邮件配置
-      const [smtpRows] = await execQuery(pool!,
-        'SELECT key_name, value FROM settings WHERE key_name IN (?, ?, ?, ?, ?, ?)',
-        ['smtpHost', 'smtpPort', 'smtpUser', 'smtpPassword', 'smtpFrom', 'smtpSecure']
-      );
-
-      const smtpConfig: Record<string, string> = {};
-      smtpRows.forEach((row: SettingsRow) => {
-        smtpConfig[row.key_name] = row.value || '';
-      });
-      const smtpPasswordSet = !!(smtpConfig.smtpPassword && String(smtpConfig.smtpPassword).trim());
-
-      // 获取 Webhook 配置
-      const [webhookRows] = await execQuery(pool!,
-        'SELECT key_name, value FROM settings WHERE key_name IN (?, ?, ?)',
-        ['webhookUrl', 'webhookMethod', 'webhookHeaders']
-      );
-
-      const webhookConfig: Record<string, string> = {};
-      webhookRows.forEach((row: SettingsRow) => {
-        webhookConfig[row.key_name] = row.value || '';
-      });
-
-      // 获取日志表大小
-      let logTableSize = null;
-      try {
-        // 获取表大小
-        const [sizeRows] = await execQuery(pool!,
-          `SELECT ROUND(((data_length + index_length) / 1024 / 1024), 2) AS size_mb
-           FROM information_schema.tables
-           WHERE table_schema = DATABASE()
-             AND table_name = 'check_history'`
-        );
-
-        // 获取实际记录数（更准确）
-        const [countRows] = await execQuery(pool!,'SELECT COUNT(*) as count FROM check_history');
-
-        if (sizeRows.length > 0 && sizeRows[0].size_mb !== null) {
-          logTableSize = {
-            sizeMB: parseFloat(sizeRows[0].size_mb) || 0,
-            rows: parseInt(countRows[0].count) || 0
-          };
-        }
-      } catch (e) {
-        logger.warn(`获取日志表大小失败 ${JSON.stringify({error: e.message})}`);
-      }
-
-      res.json({
-        publicPageTitle,
-        logRetentionDays: isNaN(logRetentionDays) ? 30 : logRetentionDays,
-        adminEmail,
-        smtpHost: smtpConfig.smtpHost || '',
-        smtpPort: smtpConfig.smtpPort || '587',
-        smtpUser: smtpConfig.smtpUser || '',
-        // 不返回敏感密码，仅返回是否已设置
-        smtpPassword: '',
-        smtpPasswordSet,
-        smtpFrom: smtpConfig.smtpFrom || '',
-        smtpSecure: smtpConfig.smtpSecure === '1' || smtpConfig.smtpSecure === 'true',
-        webhookUrl: webhookConfig.webhookUrl || '',
-        webhookMethod: webhookConfig.webhookMethod || 'POST',
-        webhookHeaders: webhookConfig.webhookHeaders || '',
-        logTableSize
-      });
-    } catch (dbError) {
-      // 如果表不存在或其他数据库错误，返回默认值
-      logger.warn(`获取设置失败，使用默认值 ${JSON.stringify({error: dbError.message, user: req.user?.username})}`);
-      res.json({
-        publicPageTitle: '服务状态监控',
-        logRetentionDays: 30,
-        adminEmail: null,
-        logTableSize: null,
-        smtpPassword: '',
-        smtpPasswordSet: false
-      });
-    }
-  } catch (e) {
-    logger.error(`获取设置失败 ${JSON.stringify({error: e.message, user: req.user?.username})}`);
-    res.json({
-      publicPageTitle: '服务状态监控',
-      logRetentionDays: 30,
-      adminEmail: null,
-      logTableSize: null,
-      smtpPassword: '',
-      smtpPasswordSet: false
-    });
-  }
-});
-
-app.post('/api/settings/test-webhook', authMiddleware, async (req: Request, res: Response) => {
-  try {
-    // 从请求体获取 Webhook 配置（从页面表单获取）
-    const {webhookUrl, webhookMethod, webhookHeaders} = req.body;
-
-    // 验证必填项
-    if (!webhookUrl) {
-      return res.status(400).json({error: 'Webhook URL 不能为空'});
-    }
-
-    const method = (webhookMethod || 'POST').toUpperCase();
-    let headers = {
-      'Content-Type': 'application/json',
-      'User-Agent': 'Xilore-Uptime/1.0'
-    };
-
-    // 解析请求头
-    if (webhookHeaders) {
-      try {
-        const customHeaders = typeof webhookHeaders === 'string' ? JSON.parse(webhookHeaders) : webhookHeaders;
-        headers = {...headers, ...customHeaders};
-      } catch (e) {
-        return res.status(400).json({error: '请求头格式错误，必须是有效的 JSON'});
-      }
-    }
-
-    // 构建测试请求体
-    const payload = {
-      event: 'test',
-      message: '这是一条测试 Webhook 消息',
-      timestamp: new Date().toISOString(),
-      time: new Date().toLocaleString('zh-CN')
-    };
-
-    // 发送 Webhook 请求
-    const parsedUrl = new URL(webhookUrl);
-    const httpModule = parsedUrl.protocol === 'https:' ? https : http;
-
-    const requestOptions = {
-      hostname: parsedUrl.hostname,
-      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
-      path: parsedUrl.pathname + parsedUrl.search,
-      method: method,
-      headers: headers
-    };
-
-    const currentUser = req.user?.username;
-    await new Promise((resolve: (v?: void) => void, reject: (e: Error) => void) => {
-      const httpReq = httpModule.request(requestOptions, (res: http.IncomingMessage) => {
-        let data = '';
-        res.on('data', (chunk: Buffer | string) => {
-          data += chunk;
-        });
-        res.on('end', () => {
-          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-            logger.info(`测试 Webhook 发送成功 ${JSON.stringify({statusCode: res.statusCode, user: currentUser})}`);
-            resolve(undefined);
-          } else {
-            logger.warn(`测试 Webhook 返回非成功状态码 ${JSON.stringify({
-              statusCode: res.statusCode,
-              user: currentUser
-            })}`);
-            // 根据状态码返回友好的错误信息
-            const code = res.statusCode || 0;
-            let errorMsg = `HTTP ${code}`;
-            if (code === 404) {
-              errorMsg = 'Webhook URL 不存在 (404)';
-            } else if (code === 401) {
-              errorMsg = '认证失败，请检查请求头配置 (401)';
-            } else if (code === 403) {
-              errorMsg = '访问被拒绝 (403)';
-            } else if (code === 500) {
-              errorMsg = '目标服务器内部错误 (500)';
-            }
-            reject(new Error(errorMsg));
-          }
-        });
-      });
-
-      httpReq.on('error', (err: Error) => {
-        logger.error(`测试 Webhook 请求失败 ${JSON.stringify({error: err.message, user: currentUser})}`);
-        reject(err);
-      });
-
-      httpReq.setTimeout(10000); // 10秒超时
-      httpReq.on('timeout', () => {
-        httpReq.destroy();
-        logger.error(`测试 Webhook 请求超时 ${JSON.stringify({user: currentUser})}`);
-        reject(new Error('Request timeout'));
-      });
-
-      if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
-        httpReq.write(JSON.stringify(payload));
-      }
-
-      httpReq.end();
-    });
-
-    res.json({success: true, message: 'Webhook 测试成功'});
-  } catch (error) {
-    logger.error(`测试 Webhook 失败 ${JSON.stringify({error: error.message, user: req.user?.username})}`);
-    res.status(500).json({error: '测试失败: ' + error.message});
-  }
-});
-
-app.post('/api/settings/test-email', authMiddleware, async (req: Request, res: Response) => {
-  try {
-    // 从请求体获取邮件配置（从页面表单获取）
-    const {smtpHost, smtpPort, smtpUser, smtpPassword, smtpFrom, smtpSecure, toEmail} = req.body;
-
-    // 验证必填项
-    if (!smtpHost || !smtpUser || !smtpPassword || !smtpFrom || !toEmail) {
-      return res.status(400).json({error: '邮件配置不完整'});
-    }
-
-    const port = parseInt(smtpPort) || 587;
-    const secure = smtpSecure === true || smtpSecure === 'true' || smtpSecure === 1;
-
-    // 创建邮件传输器
-    const transporter = (nodemailer as any).createTransport({
-      host: smtpHost,
-      port: port,
-      secure: secure,
-      auth: {
-        user: smtpUser,
-        pass: smtpPassword
-      }
-    });
-
-    // 发送测试邮件
-    const sendTime = new Date().toLocaleString('zh-CN');
-    const secureText = secure ? 'SSL/TLS' : 'STARTTLS';
-    const testHtml = renderTemplate('test-email.template', {
-      SEND_TIME: escapeHtml(sendTime),
-      SMTP_HOST: escapeHtml(smtpHost),
-      SMTP_PORT: escapeHtml(String(port)),
-      SECURE_TEXT: escapeHtml(secureText),
-      SMTP_FROM: escapeHtml(smtpFrom),
-      YEAR: String(new Date().getFullYear())
-    });
-    await transporter.sendMail({
-      from: smtpFrom,
-      to: toEmail,
-      subject: '测试邮件 - Xilore Uptime',
-      html: testHtml
-    });
-
-    logger.info(`测试邮件发送成功 ${JSON.stringify({to: toEmail, user: req.user?.username})}`);
-    res.json({success: true, message: '测试邮件已发送到 ' + toEmail});
-  } catch (error) {
-    logger.error(`测试邮件发送失败 ${JSON.stringify({error: error.message, user: req.user?.username})}`);
-    res.status(500).json({error: '发送失败: ' + error.message});
-  }
-});
-
-app.put('/api/settings', authMiddleware, async (req: Request, res: Response) => {
-  try {
-    if (!pool) {
-      return res.status(500).json({error: '数据库未连接'});
-    }
-
-    const {
-      publicPageTitle,
-      logRetentionDays,
-      adminEmail,
-      adminPassword,
-      adminPasswordConfirm,
-      smtpHost,
-      smtpPort,
-      smtpUser,
-      smtpPassword,
-      smtpFrom,
-      smtpSecure,
-      webhookUrl,
-      webhookMethod,
-      webhookHeaders
-    } = req.body;
-
-    if (publicPageTitle !== undefined) {
-      const value = publicPageTitle || '服务状态监控';
-
-      // 使用 INSERT ... ON DUPLICATE KEY UPDATE 来插入或更新
-      await execQuery(pool!,
-        `INSERT INTO settings (key_name, value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE value      = ?,
-                                 updated_at = CURRENT_TIMESTAMP`,
-        ['publicPageTitle', value, value]
-      );
-
-      // 刷新服务端标题缓存，确保保存后立刻生效
-      cachedPublicTitle = value;
-      cachedPublicTitleAt = Date.now();
-
-      logger.info(`更新设置成功 ${JSON.stringify({publicPageTitle: value, user: req.user?.username})}`);
-    }
-
-    if (logRetentionDays !== undefined) {
-      const retentionDays = parseInt(logRetentionDays, 10);
-      if (isNaN(retentionDays) || retentionDays < 30) {
-        return res.status(400).json({error: '日志保留天数必须至少为30天'});
-      }
-
-      const value = retentionDays.toString();
-
-      // 使用 INSERT ... ON DUPLICATE KEY UPDATE 来插入或更新
-      await execQuery(pool!,
-        `INSERT INTO settings (key_name, value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE value      = ?,
-                                 updated_at = CURRENT_TIMESTAMP`,
-        ['logRetentionDays', value, value]
-      );
-
-      logger.info(`更新设置成功 ${JSON.stringify({logRetentionDays: retentionDays, user: req.user?.username})}`);
-
-      // 重新调度定时任务以应用新的设置
-      scheduleLogCleanup();
-    }
-
-    // 更新管理员邮箱
-    if (adminEmail !== undefined && req.user && req.user.username) {
-      const email = adminEmail ? adminEmail.trim() : null;
-      await execQuery(pool!,
-        'UPDATE users SET email = ? WHERE username = ? AND role = ?',
-        [email, req.user.username, 'admin']
-      );
-      logger.info(`更新管理员邮箱成功 ${JSON.stringify({email, user: req.user.username})}`);
-    }
-
-    // 更新管理员密码
-    if (adminPassword !== undefined && adminPassword !== null && adminPassword !== '') {
-      if (adminPassword.length < 6) {
-        return res.status(400).json({error: '密码长度至少6位'});
-      }
-
-      if (adminPassword !== adminPasswordConfirm) {
-        return res.status(400).json({error: '两次输入的密码不一致'});
-      }
-
-      if (req.user && req.user.username) {
-        const hashedPassword = await bcrypt.hash(adminPassword, 10);
-        await execQuery(pool!,
-          'UPDATE users SET password = ? WHERE username = ? AND role = ?',
-          [hashedPassword, req.user.username, 'admin']
-        );
-        logger.info(`更新管理员密码成功 ${JSON.stringify({user: req.user.username})}`);
-      }
-    }
-
-    // 更新邮件配置
-    if (smtpHost !== undefined) {
-      await execQuery(pool!,
-        `INSERT INTO settings (key_name, value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE value      = ?,
-                                 updated_at = CURRENT_TIMESTAMP`,
-        ['smtpHost', smtpHost || '', smtpHost || '']
-      );
-    }
-
-    if (smtpPort !== undefined) {
-      await execQuery(pool!,
-        `INSERT INTO settings (key_name, value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE value      = ?,
-                                 updated_at = CURRENT_TIMESTAMP`,
-        ['smtpPort', smtpPort || '587', smtpPort || '587']
-      );
-    }
-
-    if (smtpUser !== undefined) {
-      await execQuery(pool!,
-        `INSERT INTO settings (key_name, value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE value      = ?,
-                                 updated_at = CURRENT_TIMESTAMP`,
-        ['smtpUser', smtpUser || '', smtpUser || '']
-      );
-    }
-
-    if (smtpPassword !== undefined) {
-      await execQuery(pool!,
-        `INSERT INTO settings (key_name, value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE value      = ?,
-                                 updated_at = CURRENT_TIMESTAMP`,
-        ['smtpPassword', smtpPassword || '', smtpPassword || '']
-      );
-    }
-
-    if (smtpFrom !== undefined) {
-      await execQuery(pool!,
-        `INSERT INTO settings (key_name, value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE value      = ?,
-                                 updated_at = CURRENT_TIMESTAMP`,
-        ['smtpFrom', smtpFrom || '', smtpFrom || '']
-      );
-    }
-
-    if (smtpSecure !== undefined) {
-      await execQuery(pool!,
-        `INSERT INTO settings (key_name, value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE value      = ?,
-                                 updated_at = CURRENT_TIMESTAMP`,
-        ['smtpSecure', smtpSecure ? '1' : '0', smtpSecure ? '1' : '0']
-      );
-    }
-
-    // 更新 Webhook 配置
-    if (webhookUrl !== undefined) {
-      const value = webhookUrl || '';
-      await execQuery(pool!,
-        `INSERT INTO settings (key_name, value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE value      = ?,
-                                 updated_at = CURRENT_TIMESTAMP`,
-        ['webhookUrl', value, value]
-      );
-    }
-
-    if (webhookMethod !== undefined) {
-      const value = (webhookMethod || 'POST').toUpperCase();
-      await execQuery(pool!,
-        `INSERT INTO settings (key_name, value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE value      = ?,
-                                 updated_at = CURRENT_TIMESTAMP`,
-        ['webhookMethod', value, value]
-      );
-    }
-
-    if (webhookHeaders !== undefined) {
-      const value = typeof webhookHeaders === 'string'
-        ? (webhookHeaders || '')
-        : JSON.stringify(webhookHeaders || {});
-      await execQuery(pool!,
-        `INSERT INTO settings (key_name, value)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE value      = ?,
-                                 updated_at = CURRENT_TIMESTAMP`,
-        ['webhookHeaders', value, value]
-      );
-    }
-
-    // 返回更新后的设置
-    const [titleRows] = await execQuery(pool!,
-      'SELECT value FROM settings WHERE key_name = ?',
-      ['publicPageTitle']
-    );
-
-    const updatedTitle = titleRows.length > 0 && titleRows[0].value
-      ? titleRows[0].value
-      : '服务状态监控';
-
-    const [retentionRows] = await execQuery(pool!,
-      'SELECT value FROM settings WHERE key_name = ?',
-      ['logRetentionDays']
-    );
-
-    const updatedRetention = retentionRows.length > 0 && retentionRows[0].value
-      ? parseInt(retentionRows[0].value, 10)
-      : 30;
-
-    // 获取更新后的管理员邮箱
-    let updatedEmail = null;
-    if (req.user && req.user.username) {
-      const [userRows] = await execQuery(pool!,
-        'SELECT email FROM users WHERE username = ? AND role = ?',
-        [req.user.username, 'admin']
-      );
-      if (userRows.length > 0) {
-        updatedEmail = userRows[0].email || null;
-      }
-    }
-
-    // 获取更新后的邮件配置
-    const [updatedSmtpRows] = await execQuery(pool!,
-      'SELECT key_name, value FROM settings WHERE key_name IN (?, ?, ?, ?, ?, ?)',
-      ['smtpHost', 'smtpPort', 'smtpUser', 'smtpPassword', 'smtpFrom', 'smtpSecure']
-    );
-
-    const updatedSmtpConfig: Record<string, string> = {};
-    updatedSmtpRows.forEach((row: SettingsRow) => {
-      updatedSmtpConfig[row.key_name] = row.value || '';
-    });
-    const smtpPasswordSet = !!(updatedSmtpConfig.smtpPassword && String(updatedSmtpConfig.smtpPassword).trim());
-
-    // 获取更新后的 Webhook 配置
-    const [updatedWebhookRows] = await execQuery(pool!,
-      'SELECT key_name, value FROM settings WHERE key_name IN (?, ?, ?)',
-      ['webhookUrl', 'webhookMethod', 'webhookHeaders']
-    );
-
-    const updatedWebhookConfig: Record<string, string> = {};
-    updatedWebhookRows.forEach((row: SettingsRow) => {
-      updatedWebhookConfig[row.key_name] = row.value || '';
-    });
-
-    res.json({
-      publicPageTitle: updatedTitle,
-      logRetentionDays: isNaN(updatedRetention) ? 30 : updatedRetention,
-      adminEmail: updatedEmail,
-      smtpHost: updatedSmtpConfig.smtpHost || '',
-      smtpPort: updatedSmtpConfig.smtpPort || '587',
-      smtpUser: updatedSmtpConfig.smtpUser || '',
-      // 不返回敏感密码，仅返回是否已设置
-      smtpPassword: '',
-      smtpPasswordSet,
-      smtpFrom: updatedSmtpConfig.smtpFrom || '',
-      smtpSecure: updatedSmtpConfig.smtpSecure === '1' || updatedSmtpConfig.smtpSecure === 'true',
-      webhookUrl: updatedWebhookConfig.webhookUrl || '',
-      webhookMethod: updatedWebhookConfig.webhookMethod || 'POST',
-      webhookHeaders: updatedWebhookConfig.webhookHeaders || ''
-    });
-  } catch (e) {
-    logger.error(`更新设置失败 ${JSON.stringify({error: e.message, user: req.user?.username})}`);
-    res.status(500).json({error: (e as Error).message});
-  }
+registerSettingsRoutes(app, {
+  getPool: () => pool,
+  logger,
+  authMiddleware,
+  setPublicPageTitleCache: (title: string) => {
+    cachedPublicTitle = title;
+    cachedPublicTitleAt = Date.now();
+  },
+  scheduleLogCleanup
 });
 
 // ============ 日志清理功能 ============
@@ -2866,170 +1505,7 @@ setInterval(async () => {
 }, 30000);
 
 // ============ 公开 API（不需要认证）============
-app.get('/api/public/title', async (req: Request, res: Response) => {
-  try {
-    if (!pool) {
-      return res.json({title: '服务状态监控'});
-    }
-
-    try {
-      const [rows] = await execQuery(pool!,
-        'SELECT value FROM settings WHERE key_name = ?',
-        ['publicPageTitle']
-      );
-
-      const title = rows.length > 0 && rows[0].value
-        ? rows[0].value
-        : '服务状态监控';
-
-      res.json({title});
-    } catch (dbError) {
-      // 如果表不存在或其他数据库错误，返回默认值
-      logger.warn(`获取公开页面标题失败，使用默认值 ${JSON.stringify({error: dbError.message})}`);
-      res.json({title: '服务状态监控'});
-    }
-  } catch (e: unknown) {
-    logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
-    res.status(500).json({error: (e as Error).message});
-  }
-});
-
-app.get('/api/public/groups', async (req: Request, res: Response) => {
-  try {
-    // 获取所有分组，但只返回那些有公开服务的分组
-    const [rows] = await execQuery(pool!,
-      `SELECT DISTINCT g.id, g.name, g.sort_order
-       FROM monitor_groups g
-                INNER JOIN monitors m ON m.group_id = g.id
-       WHERE m.is_public = 1
-       ORDER BY g.sort_order, g.id`
-    );
-    res.json(rows.map((r: MonitorGroupRow) => ({
-      id: r.id,
-      name: r.name,
-      sort_order: r.sort_order ?? 0
-    })));
-  } catch (e: unknown) {
-    logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
-    res.status(500).json({error: (e as Error).message});
-  }
-});
-
-app.get('/api/public/monitors', async (req: Request, res: Response) => {
-  try {
-    // 只返回公开展示需要的字段，不暴露 type、target、port 等敏感信息
-    const [rows] = await execQuery(pool!,
-      'SELECT id, name, status, group_id, enabled, last_response_time, last_check FROM monitors WHERE is_public = 1 ORDER BY group_id, created_at DESC'
-    );
-
-    const ids = rows.map((m: MonitorRow) => m.id);
-    const uptimeMap = new Map();
-    if (ids.length > 0) {
-      const inPlaceholders = ids.map(() => '?').join(',');
-      const [uptimeRows] = await execQuery(pool!,
-        `SELECT monitor_id,
-                COUNT(*)                                           as total_checks,
-                SUM(IF(status = 'up' OR status = 'warning', 1, 0)) as up_checks
-         FROM check_history
-         WHERE checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-           AND monitor_id IN (${inPlaceholders})
-         GROUP BY monitor_id`,
-        ids
-      );
-      uptimeRows.forEach((r: UptimeAggRow) => {
-        uptimeMap.set(r.monitor_id, {
-          total: Number(r.total_checks) || 0,
-          up: Number(r.up_checks) || 0,
-        });
-      });
-    }
-
-    const monitorsWithUptime = rows.map((monitor: MonitorRow) => {
-      const u = uptimeMap.get(monitor.id) || {total: 0, up: 0};
-      const uptime_24h = u.total > 0 ? (u.up / u.total) * 100 : null;
-      return {...monitor, uptime_24h};
-    });
-
-    res.json(monitorsWithUptime);
-  } catch (e: unknown) {
-    logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
-    res.status(500).json({error: (e as Error).message});
-  }
-});
-
-// 批量获取监控状态条数据（用于异步加载）
-app.get('/api/public/monitors/statusbars', async (req: Request, res: Response) => {
-  try {
-    const [rows] = await execQuery(pool!,"SELECT id FROM monitors WHERE is_public = 1");
-    const ids = rows.map((r: MonitorRow) => Number(r.id)).filter((v: number) => Number.isFinite(v));
-    if (ids.length === 0) {
-      return res.json([]);
-    }
-
-    const inPlaceholders = ids.map(() => '?').join(',');
-    const [historyRows] = await execQuery(pool!,
-      `SELECT monitor_id, status, checked_at, message
-       FROM check_history
-       WHERE checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-         AND monitor_id IN (${inPlaceholders})
-       ORDER BY monitor_id, checked_at`,
-      ids
-    );
-
-    res.json(buildStatusBars24h(ids, historyRows));
-  } catch (e: unknown) {
-    logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
-    res.status(500).json({error: (e as Error).message});
-  }
-});
-
-app.get('/api/public/stats', async (req: Request, res: Response) => {
-  try {
-    // 获取基础统计
-    const [rows] = await execQuery(pool!,
-      `SELECT COUNT(*)                          as total,
-              SUM(IF(status = 'up', 1, 0))      as up,
-              SUM(IF(status = 'down', 1, 0))    as down,
-              SUM(IF(status = 'unknown', 1, 0)) as unknown
-       FROM monitors
-       WHERE is_public = 1
-         AND enabled = 1`
-    );
-
-    const stats = rows[0] || {total: 0, up: 0, down: 0, unknown: 0};
-
-    // 计算24小时可用率（warning也算作可用）
-    const [uptimeRows] = await execQuery(pool!,
-      `SELECT m.id,
-              COUNT(h.id)                                            as total_checks,
-              SUM(IF(h.status = 'up' OR h.status = 'warning', 1, 0)) as up_checks
-       FROM monitors m
-                LEFT JOIN check_history h ON m.id = h.monitor_id
-           AND h.checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-       WHERE m.is_public = 1
-         AND m.enabled = 1
-       GROUP BY m.id`
-    );
-
-    let totalUptime = 0;
-    let monitorCount = 0;
-
-    uptimeRows.forEach((row: UptimeAggRow) => {
-      if (row.total_checks > 0) {
-        const uptime = (row.up_checks / row.total_checks) * 100;
-        totalUptime += uptime;
-        monitorCount++;
-      }
-    });
-
-    stats.uptime_24h = monitorCount > 0 ? (totalUptime / monitorCount) : 100;
-
-    res.json(stats);
-  } catch (e) {
-    logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
-    res.status(500).json({error: (e as Error).message});
-  }
-});
+registerPublicRoutes(app, {getPool: () => pool, logger});
 
 // ============ 页面路由（在静态文件服务之前）============
 // 初始化页面

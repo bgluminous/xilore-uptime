@@ -1,4 +1,24 @@
 // ============ 初始化页面专用的 setup 对象 ============
+/**
+ * @param {string} id
+ * @returns {HTMLElement}
+ */
+function byId(id) {
+  const element = document.getElementById(id);
+  if (!element) {
+    throw new Error(`Missing DOM element: ${id}`);
+  }
+  return element;
+}
+
+/**
+ * @param {string} id
+ * @returns {HTMLInputElement}
+ */
+function input(id) {
+  return /** @type {HTMLInputElement} */ (byId(id));
+}
+
 const setupApp = {
   currentStep: 1,
   dbConfig: null,
@@ -29,11 +49,11 @@ const setupApp = {
 
   async testDatabase() {
     const config = {
-      host: document.getElementById('db-host').value,
-      port: parseInt(document.getElementById('db-port').value),
-      user: document.getElementById('db-user').value,
-      password: document.getElementById('db-password').value,
-      name: document.getElementById('db-name').value
+      host: input('db-host').value,
+      port: parseInt(input('db-port').value),
+      user: input('db-user').value,
+      password: input('db-password').value,
+      name: input('db-name').value
     };
 
     const resultEl = document.getElementById('db-test-result');
@@ -156,8 +176,8 @@ const setupApp = {
   },
 
   async completeSetup() {
-    const password = document.getElementById('admin-password').value;
-    const passwordConfirm = document.getElementById('admin-password-confirm').value;
+    const password = input('admin-password').value;
+    const passwordConfirm = input('admin-password-confirm').value;
 
     if (password !== passwordConfirm) {
       alert('两次输入的密码不一致');
@@ -165,8 +185,8 @@ const setupApp = {
     }
 
     const adminConfig = {
-      username: document.getElementById('admin-username').value,
-      email: document.getElementById('admin-email').value,
+      username: input('admin-username').value,
+      email: input('admin-email').value,
       password: password
     };
 

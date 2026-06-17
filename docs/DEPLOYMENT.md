@@ -25,15 +25,15 @@ version: '3.8'
 
 services:
   uptime:
-    image: bgluminous/xilore-uptime:latest
+    image: bgluminous/xilore-uptime:{{version}}
     container_name: uptime
     environment:
         - PORT=3000
-        - CONFIG_PATH=./config.yml
+        - CONFIG_PATH=/app/data/config.json
         - JWT_SECRET=your-secret-key-here
     volumes:
         - /etc/localtime:/etc/localtime:ro 
-        - ./config.yml:/app/config.yml
+        - ./data:/app/data
 
 ```
 
@@ -56,7 +56,7 @@ npm install
 
 ```bash
 export PORT=3000
-export CONFIG_PATH=./config.yml
+export CONFIG_PATH=./data/config.json
 export JWT_SECRET=your-secret-key-here
 ```
 

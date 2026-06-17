@@ -2,7 +2,7 @@
 
 一个简洁高效的网站监控工具，支持 HTTP、TCP 端口和 ICMP Ping 检测。
 
-![Xilore Uptime](https://img.shields.io/badge/version-2.0.0-blue)
+![Xilore Uptime](https://img.shields.io/badge/version-2.3.0-blue)
 ![Node.js](https://img.shields.io/badge/node-%3E%3D16.0.0-green)
 ![License](https://img.shields.io/badge/license-Luminous-orange)
 
@@ -16,7 +16,7 @@
 - 📊 **实时仪表板** - 直观展示所有监控状态
 - 📈 **历史记录** - 查看检测历史和响应时间趋势
 - ⏰ **自动检测** - 可配置检测间隔（10秒-1小时）
-- 📣 **通知功能** - 支持邮件和 Webhook 通知
+- 📣 **通知功能** - 支持邮件、Webhook 和飞书通知
 - 🧩 **分组管理** - 监控分组管理与筛选
 - 🧭 **公开展示页** - 对外展示服务状态
 - 📱 **响应式设计** - 支持桌面和移动设备
