@@ -4,7 +4,8 @@ import https from 'https';
 import { URL } from 'url';
 import bcrypt from 'bcryptjs';
 import nodemailer from 'nodemailer';
-import type { Pool } from 'mysql2/promise';
+import type { DatabaseClient } from '../core/db-utils.js';
+import { assertWritable } from '../core/runtime-mode.js';
 import type { SettingsRow } from '../core/db-types.js';
 import { execQuery } from '../core/db-utils.js';
 import { sendFeishuRequest } from '../features/notifications.js';
@@ -17,7 +18,7 @@ interface RouteLogger {
 }
 
 interface SettingsRoutesContext {
-  getPool(): Pool | null;
+  getPool(): DatabaseClient | null;
   logger: RouteLogger;
   authMiddleware: RequestHandler;
   setPublicPageTitleCache(title: string): void;
@@ -80,6 +81,7 @@ export function registerSettingsRoutes(app: Express, ctx: SettingsRoutesContext)
 
   app.post('/api/settings/test-webhook', authMiddleware, async (req: Request, res: Response) => {
     try {
+      assertWritable();
       const {webhookUrl, webhookMethod, webhookHeaders} = req.body;
 
       if (!webhookUrl) {
@@ -179,6 +181,7 @@ export function registerSettingsRoutes(app: Express, ctx: SettingsRoutesContext)
 
   app.post('/api/settings/test-feishu', authMiddleware, async (req: Request, res: Response) => {
     try {
+      assertWritable();
       const pool = ctx.getPool();
       const {feishuWebhookUrl, feishuSecret} = req.body;
 
@@ -244,6 +247,7 @@ export function registerSettingsRoutes(app: Express, ctx: SettingsRoutesContext)
 
   app.post('/api/settings/test-email', authMiddleware, async (req: Request, res: Response) => {
     try {
+      assertWritable();
       const {smtpHost, smtpPort, smtpUser, smtpPassword, smtpFrom, smtpSecure, toEmail} = req.body;
 
       if (!smtpHost || !smtpUser || !smtpPassword || !smtpFrom || !toEmail) {
@@ -433,7 +437,7 @@ export function registerSettingsRoutes(app: Express, ctx: SettingsRoutesContext)
 }
 
 async function loadSettingsPayload(
-  pool: Pool,
+  pool: DatabaseClient,
   username: string | undefined,
   logger: RouteLogger,
   includeLogTableSize: boolean
@@ -497,7 +501,7 @@ async function loadSettingsPayload(
   return payload;
 }
 
-async function loadSettingsMap(pool: Pool, keys: string[]): Promise<Record<string, string>> {
+async function loadSettingsMap(pool: DatabaseClient, keys: string[]): Promise<Record<string, string>> {
   const placeholders = keys.map(() => '?').join(', ');
   const [rows] = await execQuery(pool,
     `SELECT key_name, value FROM settings WHERE key_name IN (${placeholders})`,
@@ -511,7 +515,7 @@ async function loadSettingsMap(pool: Pool, keys: string[]): Promise<Record<strin
   return config;
 }
 
-async function loadLogTableSize(pool: Pool, logger: RouteLogger): Promise<{ sizeMB: number; rows: number } | null> {
+async function loadLogTableSize(pool: DatabaseClient, logger: RouteLogger): Promise<{ sizeMB: number; rows: number } | null> {
   try {
     const [sizeRows] = await execQuery(pool,
       `SELECT ROUND(((data_length + index_length) / 1024 / 1024), 2) AS size_mb
@@ -535,7 +539,7 @@ async function loadLogTableSize(pool: Pool, logger: RouteLogger): Promise<{ size
   return null;
 }
 
-async function upsertSetting(pool: Pool, key: string, value: string): Promise<void> {
+async function upsertSetting(pool: DatabaseClient, key: string, value: string): Promise<void> {
   await execQuery(pool,
     `INSERT INTO settings (key_name, value)
      VALUES (?, ?)

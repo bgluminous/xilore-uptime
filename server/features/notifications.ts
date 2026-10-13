@@ -3,7 +3,8 @@ import https from 'https';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import { URL } from 'url';
-import type { Pool } from 'mysql2/promise';
+import type { DatabaseExecutor } from '../core/db-utils.js';
+import { assertWritable } from '../core/runtime-mode.js';
 import type { MonitorRow, SettingsRow } from '../core/db-types.js';
 import { execQuery } from '../core/db-utils.js';
 import { escapeHtml, renderTemplate } from '../core/templates.js';
@@ -19,6 +20,7 @@ export interface MonitorNotificationEvent {
   message?: string;
   responseTime?: number | null;
   timestamp?: Date;
+  force?: boolean;
 }
 
 interface NotificationLogger {
@@ -28,7 +30,8 @@ interface NotificationLogger {
 }
 
 export interface NotificationContext {
-  pool: Pool;
+  pool: DatabaseExecutor;
+  strictDelivery?: boolean;
   logger: NotificationLogger;
 }
 
@@ -39,6 +42,7 @@ function isMonitorNotificationEnabled(monitor: MonitorRow, channel: MonitorNotif
 }
 
 function shouldDispatchMonitorNotification(event: MonitorNotificationEvent): boolean {
+  if (event.force) return true;
   if (event.type === 'create' || event.type === 'delete') return true;
   if (event.newStatus === 'warning') return true;
   return (event.oldStatus || 'unknown') !== (event.newStatus || 'unknown');
@@ -142,6 +146,7 @@ function getNotificationResponseTimeText(event: MonitorNotificationEvent): strin
 }
 
 export function dispatchMonitorNotification(ctx: NotificationContext, event: MonitorNotificationEvent): void {
+  assertWritable();
   if (!shouldDispatchMonitorNotification(event)) return;
 
   const senders: Array<{
@@ -166,6 +171,12 @@ export function dispatchMonitorNotification(ctx: NotificationContext, event: Mon
   });
 }
 
+export async function sendMonitorNotificationChannel(ctx: NotificationContext, event: MonitorNotificationEvent, channel: MonitorNotificationChannel): Promise<void> {
+  assertWritable();
+  const send = {email: sendEmailNotification, webhook: sendWebhookNotification, feishu: sendFeishuNotification}[channel];
+  await send({...ctx, strictDelivery: true}, event);
+}
+
 async function sendEmailNotification(ctx: NotificationContext, event: MonitorNotificationEvent): Promise<void> {
   const monitor = event.monitor;
   try {
@@ -174,6 +185,7 @@ async function sendEmailNotification(ctx: NotificationContext, event: MonitorNot
 
     if (smtpRows.length === 0 || !smtpRows.find((r: SettingsRow) => r.key_name === 'smtpHost' && r.value)) {
       ctx.logger.warn(`邮件配置未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
+      if (ctx.strictDelivery) throw new Error('通知配置不完整或渠道拒绝投递');
       return;
     }
 
@@ -191,12 +203,14 @@ async function sendEmailNotification(ctx: NotificationContext, event: MonitorNot
 
     if (!config.host || !config.user || !config.password || !config.from) {
       ctx.logger.warn(`邮件配置不完整，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
+      if (ctx.strictDelivery) throw new Error('通知配置不完整或渠道拒绝投递');
       return;
     }
 
     const [userRows] = await execQuery(ctx.pool, 'SELECT email FROM users WHERE role = ? LIMIT 1', ['admin']);
     if (userRows.length === 0 || !userRows[0].email) {
       ctx.logger.warn(`管理员邮箱未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
+      if (ctx.strictDelivery) throw new Error('通知配置不完整或渠道拒绝投递');
       return;
     }
 
@@ -204,6 +218,7 @@ async function sendEmailNotification(ctx: NotificationContext, event: MonitorNot
       host: config.host,
       port: config.port,
       secure: config.secure || false,
+      connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 20000,
       auth: {
         user: config.user,
         pass: config.password
@@ -256,6 +271,7 @@ async function sendWebhookNotification(ctx: NotificationContext, event: MonitorN
 
     if (webhookRows.length === 0 || !webhookRows.find((r: SettingsRow) => r.key_name === 'webhookUrl' && r.value)) {
       ctx.logger.warn(`Webhook 配置未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
+      if (ctx.strictDelivery) throw new Error('通知配置不完整或渠道拒绝投递');
       return;
     }
 
@@ -276,6 +292,7 @@ async function sendWebhookNotification(ctx: NotificationContext, event: MonitorN
 
     if (!config.url) {
       ctx.logger.warn(`Webhook URL 未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
+      if (ctx.strictDelivery) throw new Error('通知配置不完整或渠道拒绝投递');
       return;
     }
 
@@ -338,7 +355,8 @@ async function sendWebhookNotification(ctx: NotificationContext, event: MonitorN
               monitorId: monitor.id,
               statusCode: res.statusCode
             })}`);
-            resolve(undefined);
+            if (ctx.strictDelivery) reject(new Error('Webhook 拒绝投递'));
+            else resolve(undefined);
           }
         });
       });
@@ -421,6 +439,7 @@ export async function sendFeishuRequest(
   logContext: Record<string, unknown>,
   logger?: NotificationLogger
 ): Promise<{ statusCode: number; body: string; data: any }> {
+  assertWritable();
   const payload: Record<string, unknown> = {
     msg_type: 'interactive',
     card
@@ -493,6 +512,7 @@ async function sendFeishuNotification(ctx: NotificationContext, event: MonitorNo
 
     if (feishuRows.length === 0 || !feishuRows.find((r: SettingsRow) => r.key_name === 'feishuWebhookUrl' && r.value)) {
       ctx.logger.warn(`飞书配置未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
+      if (ctx.strictDelivery) throw new Error('通知配置不完整或渠道拒绝投递');
       return;
     }
 
@@ -504,6 +524,7 @@ async function sendFeishuNotification(ctx: NotificationContext, event: MonitorNo
 
     if (!config.webhookUrl) {
       ctx.logger.warn(`飞书 Webhook URL 未设置，跳过发送 ${JSON.stringify({monitorId: monitor.id})}`);
+      if (ctx.strictDelivery) throw new Error('通知配置不完整或渠道拒绝投递');
       return;
     }
 
@@ -512,11 +533,13 @@ async function sendFeishuNotification(ctx: NotificationContext, event: MonitorNo
 
     if (result.statusCode < 200 || result.statusCode >= 300) {
       ctx.logger.warn(`飞书通知返回非成功状态码 ${JSON.stringify({monitorId: monitor.id, statusCode: result.statusCode})}`);
+      if (ctx.strictDelivery) throw new Error('通知配置不完整或渠道拒绝投递');
       return;
     }
 
     if (result.data && typeof result.data.code === 'number' && result.data.code !== 0) {
       ctx.logger.warn(`飞书通知返回失败 ${JSON.stringify({monitorId: monitor.id, code: result.data.code, msg: result.data.msg || result.data.message})}`);
+      if (ctx.strictDelivery) throw new Error('通知配置不完整或渠道拒绝投递');
       return;
     }
 

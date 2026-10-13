@@ -11,6 +11,8 @@ RUN npm install
 # 只复制需要参与编译的 TS 源码与配置
 COPY tsconfig.json ./
 COPY server ./server
+COPY public ./public
+COPY scripts ./scripts
 
 # 编译 TypeScript -> dist/
 RUN npm run build
@@ -31,8 +33,8 @@ RUN npm install --production
 
 # 从构建阶段复制编译产物
 COPY --from=builder /app/dist ./dist
-# 静态资源无需编译，直接从上下文复制
-COPY public ./public
+# 只复制经过生产构建处理的静态资源
+COPY --from=builder /app/dist/public ./public
 COPY server/templates ./server/templates
 
 # 运行时通过卷挂载 data 目录（如 /app/data）存放 config.json

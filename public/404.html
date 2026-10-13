@@ -1,23 +1,16 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>页面不存在 - Xilore Uptime</title>
   <link rel="icon" href="/favicon.ico?v=1">
   <link rel="icon" href="/favicon.png?v=1" type="image/png">
-  <link rel="stylesheet" href="assets/style.css">
+  <script src="/assets/utils.js"></script>
+  <link rel="stylesheet" href="/assets/style.css">
 </head>
-<body>
-  <div class="main-content" style="min-height: 100vh; display: flex; align-items: center; justify-content: center;">
-    <div style="text-align: center; max-width: 640px;">
-      <img src="assets/404.png" alt="404 Not Found" style="max-width: 100%; height: auto; display: block; margin: 0 auto 16px;">
-      <div style="display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; margin-top: 4px;">
-        <a href="/" class="btn-primary" style="text-decoration: none;">返回状态页</a>
-        <a href="/manage" class="btn-secondary" style="text-decoration: none;">进入管理后台</a>
-      </div>
-    </div>
-  </div>
+<body class="not-found-page">
+  <div class="setup-topbar"><a class="logo" href="/manage" aria-label="Xilore Uptime 管理首页"><img src="/favicon.png" alt=""><span class="logo-text">Xilore<span class="logo-subtitle">UPTIME MONITOR</span></span></a><button class="btn-theme" type="button" onclick="ui.theme.toggle()" aria-label="切换主题" title="切换主题"><span class="icon-sun" data-ui-icon="sun"></span><span class="icon-moon" data-ui-icon="moon"></span></button></div>
+  <main class="error-page"><div class="error-content"><span class="eyebrow">SIGNAL NOT FOUND</span><div class="error-code">4<span><span data-ui-icon="activity"></span></span>4</div><h1 class="error-title">这一页，暂时失联了。</h1><p class="error-desc">你访问的页面可能已被移动、删除或从未存在过。<br>让我们回到熟悉的地方，继续守护每一次在线。</p><div class="error-actions"><a href="/" class="btn-primary">返回状态页 <span data-ui-icon="arrow"></span></a><a href="/manage" class="btn-secondary">进入管理后台</a></div></div><div class="error-orbit" aria-hidden="true"></div></main>
 </body>
 </html>
-

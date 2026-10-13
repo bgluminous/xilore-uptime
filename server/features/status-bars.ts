@@ -1,8 +1,7 @@
 import type { CheckHistoryRow } from '../core/db-types.js';
+import type {MaintenanceInterval} from './maintenance.js';
 
-export function buildStatusBars24h(monitorIds: number[], historyRows: CheckHistoryRow[]): { monitorId: number; statusBar24h: any[] }[] {
-  const now = new Date();
-  const endMs = now.getTime();
+export function buildStatusBars24h(monitorIds: number[], historyRows: CheckHistoryRow[], maintenance: MaintenanceInterval[] = [], endMs = Date.now()): { monitorId: number; statusBar24h: any[] }[] {
   const oneHourMs = 60 * 60 * 1000;
   const segmentMs = 5 * 60 * 1000;
   const start24hMs = endMs - 24 * oneHourMs;
@@ -26,7 +25,7 @@ export function buildStatusBars24h(monitorIds: number[], historyRows: CheckHisto
     buckets[hourIdx].push(row);
   }
 
-  const priority = {down: 3, warning: 2, up: 1};
+  const priority = {down: 4, warning: 3, maintenance: 2, up: 1};
 
   return monitorIds.map((id) => {
     const buckets = bucketsByMonitor.get(id) || Array.from({length: 24}, () => []);
@@ -49,10 +48,12 @@ export function buildStatusBars24h(monitorIds: number[], historyRows: CheckHisto
 
         const segIdx = Math.min(11, Math.max(0, Math.floor((t - hourStartMs) / segmentMs)));
         const current = segments[segIdx];
-        if (!current || priority[r.status] > priority[current]) {
-          segments[segIdx] = r.status;
+        const display = r.in_maintenance ? 'maintenance' : r.status;
+        if (!current || priority[display] > priority[current]) {
+          segments[segIdx] = display;
         }
 
+        if (r.stats_excluded) continue;
         if (r.status === 'up') {
           upChecks++;
           lastUp = r;
@@ -65,23 +66,28 @@ export function buildStatusBars24h(monitorIds: number[], historyRows: CheckHisto
         }
       }
 
+      for (let i = 0; i < 12; i++) {
+        if (maintenance.some(window => window.monitor_id === id && window.start < hourStartMs + (i + 1) * segmentMs &&
+            window.end > hourStartMs + i * segmentMs) && !['down', 'warning'].includes(segments[i])) segments[i] = 'maintenance';
+      }
+
       let lastKnown = null;
       for (let i = 0; i < segments.length; i++) {
         if (segments[i]) {
-          lastKnown = segments[i];
+          lastKnown = segments[i] === 'maintenance' ? null : segments[i];
         } else if (lastKnown) {
           segments[i] = lastKnown;
         }
       }
 
       const firstKnownIndex = segments.findIndex((s) => s !== null);
-      if (firstKnownIndex > 0) {
+      if (firstKnownIndex > 0 && segments[firstKnownIndex] !== 'maintenance') {
         for (let i = 0; i < firstKnownIndex; i++) {
           segments[i] = segments[firstKnownIndex];
         }
       }
 
-      const totalChecks = records.length;
+      const totalChecks = records.filter(record => !record.stats_excluded).length;
       const uptime = totalChecks > 0 ? ((upChecks + warningChecks) / totalChecks) * 100 : null;
       const status = downChecks > 0 ? 'down' : warningChecks > 0 ? 'warning' : upChecks > 0 ? 'up' : null;
       const chosen = lastDown || lastWarning || lastUp;
@@ -96,6 +102,8 @@ export function buildStatusBars24h(monitorIds: number[], historyRows: CheckHisto
         checkTime: chosenTime ? chosenTime.toISOString() : null,
         message: chosen?.message || null,
         totalChecks,
+        maintenanceChecks: records.filter(record => record.in_maintenance).length,
+        excludedChecks: records.length - totalChecks,
         downChecks,
         warningChecks,
         uptime,

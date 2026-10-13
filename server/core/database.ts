@@ -1,5 +1,7 @@
-import mysql, { Pool, RowDataPacket } from "mysql2/promise";
+import mysql, { type RowDataPacket } from "mysql2/promise";
 import { getLogger } from "xilore-log4js";
+import { createDatabaseClient, type DatabaseClient } from './db-utils.js';
+import { assertWritable, isUiDevMode } from './runtime-mode.js';
 
 const logger = getLogger("database");
 
@@ -21,7 +23,7 @@ interface ColumnRow extends RowDataPacket {
 
 export async function connectDatabase(
   config: AppConfigWithDatabase
-): Promise<Pool> {
+): Promise<DatabaseClient> {
   if (!config || !config.database) {
     throw new Error("数据库配置不存在");
   }
@@ -35,16 +37,72 @@ export async function connectDatabase(
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
+    multipleStatements: false,
   });
 
-  // noinspection JSVoidFunctionReturnValueUsed,ES6RedundantAwait
-  const conn = await pool.getConnection();
-  conn.release();
-
-  return pool;
+  const client = createDatabaseClient(pool, isUiDevMode());
+  try {
+    await client.execute('SELECT 1');
+    return client;
+  } catch (error) {
+    await client.end();
+    throw error;
+  }
 }
 
-export async function initializeTables(pool: Pool): Promise<void> {
+/** 只读模式只检查兼容性，不尝试建表或补列。 */
+export async function validateExistingDatabase(pool: DatabaseClient): Promise<void> {
+  const requiredColumns = {
+    users: 'id, username, password, email, role, created_at',
+    monitor_groups: 'id, name, description, sort_order, created_at',
+    monitors: 'id, name, type, target, port, interval_seconds, timeout_seconds, retries, expected_status, group_id, status, last_check, last_response_time, ssl_days_remaining, created_at, enabled, is_public, email_notification, webhook_notification, feishu_notification, auth_username, auth_password',
+    check_history: 'id, monitor_id, status, response_time, message, checked_at, in_maintenance, stats_excluded',
+    announcements: 'id, title, body, state, pinned, channels, revision, published_ms, created_ms, updated_ms',
+    maintenances: 'id, title, body, starts_ms, ends_ms, cancelled_ms, continue_checks, suppress_alerts, exclude_stats, is_public, channels, phase, revision, created_ms, updated_ms',
+    maintenance_monitors: 'maintenance_id, monitor_id',
+    maintenance_runtime: 'monitor_id, silenced, checks_paused, baseline_status, recheck_pending, observed_ms',
+    content_deliveries: 'id, event_key, owner_type, owner_id, channel, payload, state, attempts, next_attempt_ms, lease_until_ms, last_error',
+    settings: 'id, key_name, value, updated_at'
+  };
+  for (const [table, columns] of Object.entries(requiredColumns)) {
+    try {
+      await pool.execute(`SELECT ${columns} FROM ${table} LIMIT 0`);
+    } catch (error) {
+      throw new Error(`UI 开发模式要求兼容的已有表结构，检查 ${table} 失败：${(error as Error).message}`);
+    }
+  }
+  const [rows] = await pool.execute('SELECT COUNT(*) as count FROM users WHERE role = ?', ['admin']);
+  if (!Number(rows[0]?.count)) throw new Error('UI 开发模式要求数据库中已有管理员账号');
+}
+
+/** 安装向导的连接测试会建库，必须在创建任何连接之前检查运行模式。 */
+export async function testDatabaseConnection(database: DatabaseConfig): Promise<{ initialized: boolean; hasAdmin: boolean; adminCount: number }> {
+  assertWritable();
+  const testPool = mysql.createPool({
+    host: database.host, port: database.port || 3306, user: database.user,
+    password: database.password, waitForConnections: true, connectionLimit: 1,
+    multipleStatements: false
+  });
+  try {
+    const conn = await testPool.getConnection();
+    try {
+      await conn.query('CREATE DATABASE IF NOT EXISTS ?? CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci', [database.name]);
+      await conn.query('USE ??', [database.name]);
+      const [tables] = await conn.query<RowDataPacket[]>("SHOW TABLES LIKE 'users'");
+      if (tables.length === 0) return {initialized: false, hasAdmin: false, adminCount: 0};
+      const [admins] = await conn.query<RowDataPacket[]>('SELECT COUNT(*) as count FROM users WHERE role = ?', ['admin']);
+      const adminCount = Number(admins[0].count);
+      return {initialized: true, hasAdmin: adminCount > 0, adminCount};
+    } finally {
+      conn.release();
+    }
+  } finally {
+    await testPool.end();
+  }
+}
+
+export async function initializeTables(pool: DatabaseClient): Promise<void> {
+  assertWritable();
   const createUsersTable = `
       CREATE TABLE IF NOT EXISTS users
       (
@@ -355,5 +413,51 @@ export async function initializeTables(pool: Pool): Promise<void> {
     logger.error("检查 monitor_groups 表失败:", e as Error);
   }
 
+  await initializeCommunicationTables(pool);
   logger.info("数据表初始化完成");
+}
+
+/** 可重复执行；新增表结构失败必须向上传播，避免以不完整的维护保护启动检测。 */
+export async function initializeCommunicationTables(pool: DatabaseClient): Promise<void> {
+  assertWritable();
+  await pool.execute(`CREATE TABLE IF NOT EXISTS announcements (
+    id INT AUTO_INCREMENT PRIMARY KEY, title VARCHAR(200) NOT NULL, body MEDIUMTEXT NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'draft', pinned TINYINT NOT NULL DEFAULT 0,
+    channels VARCHAR(100) NOT NULL DEFAULT '[]', revision INT NOT NULL DEFAULT 1,
+    published_ms BIGINT NULL, created_ms BIGINT NOT NULL, updated_ms BIGINT NOT NULL,
+    INDEX idx_announcement_state (state, published_ms)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await pool.execute(`CREATE TABLE IF NOT EXISTS maintenances (
+    id INT AUTO_INCREMENT PRIMARY KEY, title VARCHAR(200) NOT NULL, body MEDIUMTEXT NOT NULL,
+    starts_ms BIGINT NOT NULL, ends_ms BIGINT NULL, cancelled_ms BIGINT NULL,
+    continue_checks TINYINT NOT NULL DEFAULT 1, suppress_alerts TINYINT NOT NULL DEFAULT 1,
+    exclude_stats TINYINT NOT NULL DEFAULT 1, is_public TINYINT NOT NULL DEFAULT 0,
+    channels VARCHAR(100) NOT NULL DEFAULT '[]', revision INT NOT NULL DEFAULT 1,
+    phase VARCHAR(16) NOT NULL DEFAULT 'scheduled', created_ms BIGINT NOT NULL, updated_ms BIGINT NOT NULL,
+    INDEX idx_maintenance_time (starts_ms, ends_ms)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await pool.execute(`CREATE TABLE IF NOT EXISTS maintenance_monitors (
+    maintenance_id INT NOT NULL, monitor_id INT NOT NULL, PRIMARY KEY (maintenance_id, monitor_id),
+    INDEX idx_maintenance_monitor (monitor_id),
+    FOREIGN KEY (maintenance_id) REFERENCES maintenances(id) ON DELETE CASCADE,
+    FOREIGN KEY (monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await pool.execute(`CREATE TABLE IF NOT EXISTS maintenance_runtime (
+    monitor_id INT PRIMARY KEY, silenced TINYINT NOT NULL DEFAULT 0,
+    checks_paused TINYINT NOT NULL DEFAULT 0, baseline_status VARCHAR(16) NULL,
+    recheck_pending TINYINT NOT NULL DEFAULT 0, observed_ms BIGINT NULL,
+    FOREIGN KEY (monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await pool.execute(`CREATE TABLE IF NOT EXISTS content_deliveries (
+    id INT AUTO_INCREMENT PRIMARY KEY, event_key VARCHAR(150) NOT NULL,
+    owner_type VARCHAR(20) NOT NULL, owner_id INT NOT NULL, channel VARCHAR(16) NOT NULL,
+    payload MEDIUMTEXT NOT NULL, state VARCHAR(16) NOT NULL DEFAULT 'pending',
+    attempts INT NOT NULL DEFAULT 0, next_attempt_ms BIGINT NOT NULL,
+    lease_until_ms BIGINT NULL, last_error VARCHAR(255) NULL,
+    UNIQUE KEY uq_content_delivery (event_key, channel), INDEX idx_delivery_due (state, next_attempt_ms)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  for (const column of ['in_maintenance', 'stats_excluded']) {
+    const [rows] = await pool.execute(`SHOW COLUMNS FROM check_history LIKE '${column}'`);
+    if (!rows.length) await pool.execute(`ALTER TABLE check_history ADD COLUMN ${column} TINYINT NOT NULL DEFAULT 0`);
+  }
 }

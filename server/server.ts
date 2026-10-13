@@ -2,26 +2,32 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import mysql from 'mysql2/promise';
+import { pathToFileURL } from 'url';
+import type { Server } from 'http';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import { getLogger } from 'xilore-log4js';
-import { connectDatabase, initializeTables } from './core/database.js';
+import { connectDatabase, initializeTables, testDatabaseConnection, validateExistingDatabase } from './core/database.js';
 import { execQuery } from './core/db-utils.js';
 import { escapeHtml } from './core/templates.js';
 import { dispatchMonitorNotification } from './features/notifications.js';
-import { singleCheck } from './features/monitor-checks.js';
+import {createMonitorRunner} from './features/monitor-runner.js';
+import {createMaintenanceCoordinator, decorateMaintenance, loadMaintenanceIntervals, loadOverviewStats} from './features/maintenance.js';
+import {registerCommunicationRoutes} from './routes/communications.js';
 import { buildStatusBars24h } from './features/status-bars.js';
+import { buildHistoryChart, HISTORY_RANGE_CONFIG } from './features/history-chart.js';
+import { calculateResponseStats, loadResponseStats24h } from './features/response-stats.js';
 import { registerGroupRoutes } from './routes/groups.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { registerPublicRoutes } from './routes/public.js';
+import { registerVersionRoutes } from './routes/version.js';
 import type {
   MonitorRow,
-  CheckHistoryRow,
   UptimeAggRow
 } from './core/db-types.js';
-import type { Pool } from 'mysql2/promise';
+import type { DatabaseClient } from './core/db-utils.js';
+import { assertWritable, initializeRuntimeMode, isUiDevMode, uiDevModeMiddleware } from './core/runtime-mode.js';
 
 declare global {
   namespace Express {
@@ -40,9 +46,10 @@ interface AppConfig {
   jwtSecret?: string;
   installed?: boolean;
   installedAt?: string;
+  uiDevMode?: boolean;
 }
 
-let pool: Pool | null = null;
+let pool: DatabaseClient | null = null;
 let config: AppConfig | null = null;
 let cleanupTimeout: ReturnType<typeof setTimeout> | null = null;
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
@@ -71,6 +78,7 @@ app.use(express.json());
 app.use(express.urlencoded({extended: true}));
 app.use(cookieParser());
 app.use(logRequest);
+app.use(uiDevModeMiddleware);
 
 // 在所有路由之前应用初始化检查中间件
 app.use(initCheckMiddleware);
@@ -80,18 +88,21 @@ function loadConfig(): boolean {
   try {
     if (fs.existsSync(CONFIG_PATH)) {
       config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8')) as AppConfig;
+      if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('配置格式错误');
       logger.info('配置文件加载成功');
       return true;
     } else {
       logger.info('配置文件不存在，等待初始化');
     }
   } catch (e) {
-    logger.error(`加载配置失败 ${JSON.stringify({error: e.message})}`);
+    // 配置无法解析时无法确定保护开关，必须停止启动，且不输出可能含凭据的原文。
+    throw new Error('加载配置失败，请检查 CONFIG_PATH 指向的 JSON 配置文件');
   }
   return false;
 }
 
 function saveConfig(newConfig: AppConfig): void {
+  assertWritable();
   config = newConfig;
   // 确保配置文件的目录存在
   const configDir = path.dirname(CONFIG_PATH);
@@ -123,7 +134,7 @@ function getJWTSecret() {
 }
 
 function isInstalled() {
-  return config && config.database && config.installed;
+  return Boolean(config && config.database && config.installed);
 }
 
 // 检查系统是否已初始化（检查数据库中是否有管理员用户）
@@ -167,6 +178,7 @@ async function initCheckMiddleware(req: Request, res: Response, next: NextFuncti
     '/setup',
     '/api/install',
     '/api/public',
+    '/api/version',
     '/api/auth/login',
     '/api/auth/logout'
   ];
@@ -191,6 +203,10 @@ async function initCheckMiddleware(req: Request, res: Response, next: NextFuncti
     const initialized = await isInitialized();
 
     if (!initialized) {
+      if (isUiDevMode()) {
+        res.status(503).json({error: 'UI 开发模式无法读取已初始化的数据库，请检查连接和表结构'});
+        return;
+      }
       // 如果未初始化，所有路由（包括根路径）都重定向到 /setup
       // 如果是 API 请求，返回 JSON 错误
       if (req.path.startsWith('/api')) {
@@ -208,6 +224,10 @@ async function initCheckMiddleware(req: Request, res: Response, next: NextFuncti
   } catch (error: unknown) {
     // 如果检查初始化状态失败，也视为未初始化
     logger.warn(`检查初始化状态失败 ${JSON.stringify({error: (error as Error).message, path: req.path})}`);
+    if (isUiDevMode()) {
+      res.status(503).json({error: 'UI 开发模式数据库不可用'});
+      return;
+    }
 
     if (req.path.startsWith('/api')) {
       res.status(400).json({error: '系统未初始化，请访问 /setup 进行初始化'});
@@ -243,7 +263,8 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
 app.get('/api/install/status', async (_req: Request, res: Response) => {
   const installed = isInstalled();
   const initialized = installed ? await isInitialized() : false;
-  res.json({installed, initialized});
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({installed, initialized, uiDevMode: isUiDevMode()});
 });
 
 app.post('/api/install/test-db', async (req: Request, res: Response) => {
@@ -264,47 +285,7 @@ app.post('/api/install/test-db', async (req: Request, res: Response) => {
   const {host, port, user, password, name} = req.body;
 
   try {
-    // 先尝试连接服务器（不指定数据库）
-    const testPool = mysql.createPool({
-      host,
-      port: port || 3306,
-      user,
-      password,
-      waitForConnections: true,
-      connectionLimit: 1
-    });
-
-    // noinspection JSVoidFunctionReturnValueUsed,ES6RedundantAwait
-    const conn = await testPool.getConnection();
-
-    // 创建数据库（如果不存在）
-    await conn.query(`CREATE DATABASE IF NOT EXISTS \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
-
-    // 切换到目标数据库检查是否已初始化
-    let initialized = false;
-    let hasAdmin = false;
-    let adminCount = 0;
-
-    try {
-      await conn.query(`USE \`${name}\``);
-
-      // 检查 users 表是否存在
-      const [tables] = (await conn.query(`SHOW TABLES LIKE 'users'`)) as [any[], any];
-      if (Array.isArray(tables) && tables.length > 0) {
-        initialized = true;
-        // 检查是否存在管理员账户
-        const [admins] = await conn.query(`SELECT COUNT(*) as count
-                                           FROM users
-                                           WHERE role = 'admin'`);
-        adminCount = admins[0].count;
-        hasAdmin = adminCount > 0;
-      }
-    } catch (e) {
-      // 数据库可能是空的，忽略错误
-    }
-
-    conn.release();
-    await testPool.end();
+    const {initialized, hasAdmin, adminCount} = await testDatabaseConnection({host, port, user, password, name});
 
     res.json({
       success: true,
@@ -482,89 +463,9 @@ app.get('/api/auth/me', authMiddleware, (req: Request, res: Response) => {
   res.json({user: req.user});
 });
 
-// 带重试的检测
-async function performCheck(monitor: MonitorRow): Promise<{ status: string; responseTime: number | null; message: string; ssl_days_remaining?: number | null }> {
-  const maxRetries = Math.min(monitor.retries || 0, 3);
-  let result: { status: string; responseTime: number | null; message: string; ssl_days_remaining?: number | null };
-  let attempt = 0;
-  let retryCount = 0; // 实际重试次数
-
-  do {
-    result = await singleCheck(monitor, logger);
-    if (result.status === 'up') break;
-    attempt++;
-    if (attempt <= maxRetries) {
-      // 重试前等待1秒
-      await new Promise(r => setTimeout(r, 1000));
-      retryCount++; // 只有真正重试了才计数
-    }
-  } while (attempt <= maxRetries && result.status === 'down');
-
-  // 如果重试后才成功，将状态标记为warning
-  let historyStatus = result.status;
-  if (retryCount > 0 && result.status === 'up') {
-    historyStatus = 'warning';
-    result.message += ` (重试 ${retryCount} 次后成功)`;
-  } else if (retryCount > 0 && result.status === 'down') {
-    result.message += ` (重试 ${retryCount} 次)`;
-  }
-
-  // 获取旧状态，用于检测状态变化
-  const [oldMonitorRows] = await execQuery(pool!,'SELECT status FROM monitors WHERE id = ?', [monitor.id]);
-  const oldStatus = oldMonitorRows.length > 0 ? oldMonitorRows[0].status : null;
-
-  // 更新监控状态（超时时 responseTime 为 null）
-  // 仅当本次检测拿到证书天数（数字）时才更新 ssl_days_remaining，失败/超时/非 HTTPS 时保留原值，避免覆盖已有 SSL 信息
-  const hasNewSslDays = typeof result.ssl_days_remaining === 'number';
-  if (hasNewSslDays) {
-    await execQuery(pool!,
-      'UPDATE monitors SET status = ?, last_check = NOW(), last_response_time = ?, ssl_days_remaining = ? WHERE id = ?',
-      [result.status, result.responseTime || null, result.ssl_days_remaining, monitor.id]
-    );
-  } else {
-    await execQuery(pool!,
-      'UPDATE monitors SET status = ?, last_check = NOW(), last_response_time = ? WHERE id = ?',
-      [result.status, result.responseTime || null, monitor.id]
-    );
-  }
-
-  // 状态变化或 warning 统一分发到已启用的通知渠道。
-  dispatchMonitorNotification({pool: pool!, logger}, {
-    type: 'status',
-    monitor,
-    oldStatus,
-    newStatus: historyStatus === 'warning' ? 'warning' : result.status,
-    message: result.message,
-    responseTime: result.responseTime
-  });
-
-  // 记录历史（超时时 responseTime 为 null）
-  // 如果重试后才成功，历史记录中使用warning状态
-  await execQuery(pool!,
-    'INSERT INTO check_history (monitor_id, status, response_time, message) VALUES (?, ?, ?, ?)',
-    [monitor.id, historyStatus, result.responseTime || null, result.message]
-  );
-
-  // 清理旧历史记录（保留最近7天）
-  const [cleanupResult] = await execQuery(pool!,
-    'DELETE FROM check_history WHERE monitor_id = ? AND checked_at < DATE_SUB(NOW(), INTERVAL 7 DAY)',
-    [monitor.id]
-  );
-
-  // 记录检测结果（仅在状态变化或错误时记录详细信息）
-  if (result.status === 'down' || cleanupResult.affectedRows > 0) {
-    logger.info(`监控检测完成 ${JSON.stringify({
-      monitorId: monitor.id,
-      name: monitor.name,
-      status: result.status,
-      responseTime: result.responseTime,
-      message: result.message,
-      cleanedRecords: cleanupResult.affectedRows
-    })}`);
-  }
-
-  return result;
-}
+const performCheck = createMonitorRunner({getPool: () => pool!, logger});
+const maintenanceCoordinator = createMaintenanceCoordinator({getPool: () => pool, check: performCheck, logger});
+registerCommunicationRoutes(app, {getPool: () => pool!, authMiddleware, logger});
 
 // ============ API 路由（需要认证）============
 
@@ -573,6 +474,7 @@ registerGroupRoutes(app, {getPool: () => pool!, logger, authMiddleware});
 
 // ============ 监控 API ============
 app.get('/api/monitors', authMiddleware, async (req: Request, res: Response) => {
+  const endMs = Date.now();
   try {
     const [rows] = await execQuery(pool!,
       `SELECT id,
@@ -600,7 +502,7 @@ app.get('/api/monitors', authMiddleware, async (req: Request, res: Response) => 
        ORDER BY group_id, created_at DESC`
     );
 
-    // 只返回基础数据和可用率，不包含状态条（状态条通过 /api/monitors/statusbars 接口获取）
+    // 返回基础数据和 24 小时统计，状态条仍通过独立接口异步获取。
     const ids = rows.map((m: MonitorRow) => m.id);
     const uptimeMap = new Map();
     if (ids.length > 0) {
@@ -610,10 +512,10 @@ app.get('/api/monitors', authMiddleware, async (req: Request, res: Response) => 
                 COUNT(*)                                           as total_checks,
                 SUM(IF(status = 'up' OR status = 'warning', 1, 0)) as up_checks
          FROM check_history
-         WHERE checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+         WHERE checked_at >= ? AND checked_at < ? AND stats_excluded = 0
            AND monitor_id IN (${inPlaceholders})
          GROUP BY monitor_id`,
-        ids
+        [new Date(endMs - 24 * 3600000), new Date(endMs), ...ids]
       );
       uptimeRows.forEach((r: UptimeAggRow) => {
         uptimeMap.set(r.monitor_id, {
@@ -623,17 +525,20 @@ app.get('/api/monitors', authMiddleware, async (req: Request, res: Response) => 
       });
     }
 
+    const responseStats = await loadResponseStats24h(pool!, ids, endMs);
     const monitorsWithUptime = rows.map((monitor: MonitorRow) => {
       const u = uptimeMap.get(monitor.id) || {total: 0, up: 0};
       const uptime_24h = u.total > 0 ? (u.up / u.total) * 100 : null;
       return {
         ...monitor,
         auth_password_set: monitor.auth_password_set === 1 || monitor.auth_password_set === true,
-        uptime_24h
+        uptime_24h,
+        avg_response_24h: responseStats.get(monitor.id)?.avgResponse ?? null,
+        p99_response_24h: responseStats.get(monitor.id)?.p99Response ?? null
       };
     });
 
-    res.json(monitorsWithUptime);
+    res.json(await decorateMaintenance(pool!, monitorsWithUptime, false, endMs));
   } catch (e: unknown) {
     logger.error(`API 错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
@@ -652,7 +557,7 @@ app.get('/api/monitors/statusbars', authMiddleware, async (req: Request, res: Re
     const inPlaceholders = ids.map(() => '?').join(',');
     // 一次性取回所有监控最近24小时的记录，避免 24 * N 次查询
     const [historyRows] = await execQuery(pool!,
-      `SELECT monitor_id, status, checked_at, message
+      `SELECT monitor_id, status, checked_at, message, in_maintenance, stats_excluded
        FROM check_history
        WHERE checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
          AND monitor_id IN (${inPlaceholders})
@@ -660,7 +565,9 @@ app.get('/api/monitors/statusbars', authMiddleware, async (req: Request, res: Re
       ids
     );
 
-    res.json(buildStatusBars24h(ids, historyRows));
+    const endMs = Date.now();
+    const maintenance = await loadMaintenanceIntervals(pool!, ids, endMs - 86400000, endMs);
+    res.json(buildStatusBars24h(ids, historyRows, maintenance, endMs));
   } catch (e) {
     logger.error(`API 错误 ${JSON.stringify({path: req.path, method: req.method, error: e.message, user: req.user?.username})}`);
     res.status(500).json({error: (e as Error).message});
@@ -699,7 +606,7 @@ app.get('/api/monitors/:id', authMiddleware, async (req: Request, res: Response)
       return res.status(404).json({error: '监控不存在'});
     }
     res.json({
-      ...rows[0],
+      ...(await decorateMaintenance(pool!, rows))[0],
       auth_password_set: rows[0].auth_password_set === 1 || rows[0].auth_password_set === true
     });
   } catch (e) {
@@ -1024,6 +931,7 @@ app.post('/api/monitors/:id/check', authMiddleware, async (req: Request, res: Re
       user: req.user?.username
     })}`);
     const result = await performCheck(rows[0]);
+    if (result.skipped) return res.status(409).json({error: result.message, code: 'MAINTENANCE_CHECKS_PAUSED'});
     logger.info(`手动检测完成 ${JSON.stringify({
       monitorId: id,
       name: rows[0].name,
@@ -1115,158 +1023,53 @@ app.delete('/api/history/all', authMiddleware, async (req: Request, res: Respons
 });
 
 app.get('/api/monitors/:id/history', authMiddleware, async (req: Request, res: Response) => {
-  const range = req.query.range || '24h'; // 1h, 24h, 7d, 30d
-
-  // 计算时间范围
-  let hours = 24;
-  switch (range) {
-    case '1h':
-      hours = 1;
-      break;
-    case '24h':
-      hours = 24;
-      break;
-    case '7d':
-      hours = 24 * 7;
-      break;
-    case '30d':
-      hours = 24 * 30;
-      break;
-  }
+  const rangeParam = typeof req.query.range === 'string' ? req.query.range : '24h';
+  const range = HISTORY_RANGE_CONFIG[rangeParam] ? rangeParam : '24h';
+  const rangeConfig = HISTORY_RANGE_CONFIG[range];
+  const {hours} = rangeConfig;
+  const endMs = Date.now();
+  const windowParams = [req.params.id, new Date(endMs - hours * 3600000), new Date(endMs)];
 
   try {
+    const [monitorRows] = await execQuery(pool!, 'SELECT interval_seconds FROM monitors WHERE id = ?', [req.params.id]);
+
     // 计算统计信息（warning也算作可用）- 使用所有数据，不受limit限制
     const [stats] = await execQuery(pool!,
       `SELECT COUNT(*)                                           as total,
               SUM(IF(status = 'up' OR status = 'warning', 1, 0)) as up_count,
-              AVG(response_time)                                 as avg_response,
               MIN(response_time)                                 as min_response,
               MAX(response_time)                                 as max_response
        FROM check_history
        WHERE monitor_id = ?
-         AND checked_at >= DATE_SUB(NOW(), INTERVAL ${hours} HOUR)`,
-      [req.params.id]
+         AND checked_at >= ? AND checked_at < ? AND stats_excluded = 0`,
+      windowParams
     );
 
-    // 根据时间范围决定聚合间隔和图表数据点数量
-    let intervalMinutes = 1; // 聚合间隔（分钟）
-    let chartPoints = 60; // 图表数据点数量
-    let historyLimit = 100; // 历史记录表格显示数量（固定100条）
-
-    switch (range) {
-      case '1h':
-        intervalMinutes = 1; // 1分钟一个点
-        chartPoints = 60;
-        break;
-      case '24h':
-        intervalMinutes = 30; // 30分钟一个点
-        chartPoints = 48;
-        break;
-      case '7d':
-        intervalMinutes = 180; // 3小时一个点
-        chartPoints = 56;
-        break;
-      case '30d':
-        intervalMinutes = 720; // 12小时一个点
-        chartPoints = 60;
-        break;
-    }
+    const historyLimit = 100; // 历史记录表格显示数量（固定100条）
 
     // 一次性查询该时间范围内的所有历史记录（仅选择必要字段）
     const [allHistoryRows] = await execQuery(pool!,
-      `SELECT status, response_time, checked_at
+      `SELECT status, response_time, checked_at, in_maintenance, stats_excluded
        FROM check_history
        WHERE monitor_id = ?
-         AND checked_at >= DATE_SUB(NOW(), INTERVAL ${hours} HOUR)
+         AND checked_at >= ? AND checked_at < ?
        ORDER BY checked_at`,
-      [req.params.id]
+      windowParams
     );
 
-    // 在内存中按时间段聚合数据
-    const now = new Date();
-    const chartData = [];
-    const intervalMs = intervalMinutes * 60 * 1000;
-
-    // 从最早的时间开始，向前生成时间段
-    for (let i = chartPoints - 1; i >= 0; i--) {
-      const segmentEnd = new Date(now.getTime() - i * intervalMs);
-      const segmentStart = new Date(segmentEnd.getTime() - intervalMs);
-
-      // 筛选该时间段内的记录
-      const segmentRecords = allHistoryRows.filter((record: CheckHistoryRow) => {
-        const recordTime = new Date(record.checked_at);
-        return recordTime >= segmentStart && recordTime < segmentEnd;
-      });
-
-      if (segmentRecords.length > 0) {
-        // 聚合该时间段的数据
-        let totalResponseTime = 0;
-        let responseTimeCount = 0;
-        let minResponseTime: number | null = null;
-        let maxResponseTime: number | null = null;
-        let downCount = 0;
-        let warningCount = 0;
-        let upCount = 0;
-
-        segmentRecords.forEach((record: CheckHistoryRow) => {
-          if (record.response_time !== null && record.response_time !== undefined) {
-            totalResponseTime += record.response_time;
-            responseTimeCount++;
-            if (minResponseTime === null || record.response_time < minResponseTime) {
-              minResponseTime = record.response_time;
-            }
-            if (maxResponseTime === null || record.response_time > maxResponseTime) {
-              maxResponseTime = record.response_time;
-            }
-          }
-
-          if (record.status === 'down') {
-            downCount++;
-          } else if (record.status === 'warning') {
-            warningCount++;
-          } else if (record.status === 'up') {
-            upCount++;
-          }
-        });
-
-        // 确定主要状态（优先 down > warning > up）
-        let mainStatus = null;
-        if (downCount > 0) {
-          mainStatus = 'down';
-        } else if (warningCount > 0) {
-          mainStatus = 'warning';
-        } else if (upCount > 0) {
-          mainStatus = 'up';
-        }
-
-        chartData.push({
-          checked_at: segmentEnd.toISOString(),
-          response_time: responseTimeCount > 0 ? Math.round(totalResponseTime / responseTimeCount) : null,
-          status: mainStatus,
-          count: segmentRecords.length,
-          min_response_time: minResponseTime,
-          max_response_time: maxResponseTime
-        });
-      } else {
-        // 该时间段没有数据
-        chartData.push({
-          checked_at: segmentEnd.toISOString(),
-          response_time: null,
-          status: null,
-          count: 0
-        });
-      }
-    }
+    const maintenance = await loadMaintenanceIntervals(pool!, [Number(req.params.id)], endMs - hours * 3600000, endMs);
+    const chartData = buildHistoryChart(allHistoryRows, rangeConfig, Number(monitorRows[0]?.interval_seconds), endMs, maintenance);
+    const responseStats = calculateResponseStats(allHistoryRows);
 
     // 获取历史记录表格数据（最近N条，按时间倒序，仅选择必要字段）
     const [historyRows] = await execQuery(pool!,
-      `SELECT id, status, response_time, message, checked_at
+      `SELECT id, status, response_time, message, checked_at, in_maintenance, stats_excluded
        FROM check_history
        WHERE monitor_id = ?
-         AND checked_at >= DATE_SUB(NOW(), INTERVAL ${hours} HOUR)
+         AND checked_at >= ? AND checked_at < ?
        ORDER BY checked_at DESC
        LIMIT ${historyLimit}`,
-      [req.params.id]
+      windowParams
     );
 
     res.json({
@@ -1275,10 +1078,11 @@ app.get('/api/monitors/:id/history', authMiddleware, async (req: Request, res: R
       stats: {
         total: stats[0].total || 0,
         upCount: stats[0].up_count || 0,
-        uptime: stats[0].total > 0 ? ((stats[0].up_count / stats[0].total) * 100).toFixed(2) : 0,
-        avgResponse: Math.round(stats[0].avg_response) || 0,
-        minResponse: stats[0].min_response || 0,
-        maxResponse: stats[0].max_response || 0
+        uptime: stats[0].total > 0 ? ((stats[0].up_count / stats[0].total) * 100).toFixed(2) : null,
+        avgResponse: responseStats.avgResponse,
+        minResponse: stats[0].min_response ?? null,
+        maxResponse: stats[0].max_response ?? null,
+        p99Response: responseStats.p99Response
       }
     });
   } catch (e) {
@@ -1301,6 +1105,7 @@ registerSettingsRoutes(app, {
 
 // ============ 日志清理功能 ============
 async function cleanupOldLogs() {
+  if (isUiDevMode()) return;
   if (!pool) {
     return;
   }
@@ -1347,6 +1152,7 @@ async function cleanupOldLogs() {
 
 // ============ 定时任务：每天00:00执行日志清理 ============
 function scheduleLogCleanup() {
+  if (isUiDevMode()) return;
   // 清除旧的定时器（如果存在）
   if (cleanupTimeout) {
     clearTimeout(cleanupTimeout);
@@ -1384,41 +1190,8 @@ function scheduleLogCleanup() {
 }
 
 app.get('/api/stats', authMiddleware, async (req: Request, res: Response) => {
-  try {
-    // 统计信息合并为一次查询（减少 DB 往返）
-    const [statsRows] = await execQuery(pool!,
-      `SELECT COUNT(*)                                                                           AS total,
-              SUM(IF(enabled = 0, 1, 0))                                                         AS paused,
-              SUM(IF(enabled = 1 AND (status = 'up' OR status = 'warning'), 1, 0))               AS up,
-              SUM(IF(enabled = 1 AND (status IS NULL OR status NOT IN ('up', 'warning')), 1, 0)) AS down
-       FROM monitors`
-    );
-    const base = statsRows[0] || {total: 0, paused: 0, up: 0, down: 0};
-
-    // 计算24小时平均可用率（warning也算作可用）- 聚合在 DB 内完成
-    const [uptimeAvgRows] = await execQuery(pool!,
-      `SELECT AVG(t.uptime) AS avg_uptime
-       FROM (SELECT (SUM(IF(h.status IN ('up', 'warning'), 1, 0)) / COUNT(h.id)) * 100 AS uptime
-             FROM monitors m
-                      JOIN check_history h ON m.id = h.monitor_id
-                 AND h.checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-             WHERE m.enabled = 1
-             GROUP BY m.id) t`
-    );
-    const avgUptimeRaw = uptimeAvgRows[0]?.avg_uptime;
-    const avgUptime = avgUptimeRaw === null || avgUptimeRaw === undefined ? 100 : Number(avgUptimeRaw);
-
-    res.json({
-      total: Number(base.total) || 0,
-      up: Number(base.up) || 0,
-      down: Number(base.down) || 0,
-      paused: Number(base.paused) || 0,
-      avgUptime24h: avgUptime
-    });
-  } catch (e) {
-    logger.error(`API 错误 ${JSON.stringify({path: req.path, method: req.method, error: e.message, user: req.user?.username})}`);
-    res.status(500).json({error: (e as Error).message});
-  }
+  try { res.json(await loadOverviewStats(pool!)); }
+  catch { res.status(500).json({error: '统计数据读取失败'}); }
 });
 
 app.post('/api/check-all', authMiddleware, async (req: Request, res: Response) => {
@@ -1446,8 +1219,10 @@ app.post('/api/check-all', authMiddleware, async (req: Request, res: Response) =
 
 // ============ 定时检测任务 ============
 const checkIntervals = new Map();
+let monitorRefreshInterval: ReturnType<typeof setInterval> | undefined;
 
 function startMonitorCheck(monitor: MonitorRow): void {
+  if (isUiDevMode()) return;
   // 先清除旧的定时任务（如果存在）
   if (checkIntervals.has(monitor.id)) {
     clearInterval(checkIntervals.get(monitor.id));
@@ -1479,33 +1254,38 @@ function startMonitorCheck(monitor: MonitorRow): void {
 }
 
 async function initializeChecks() {
-  if (!pool) return;
+  if (isUiDevMode() || !pool) return;
 
   try {
     const [monitors] = await execQuery(pool!,'SELECT * FROM monitors WHERE enabled = 1');
     monitors.forEach(startMonitorCheck);
+    maintenanceCoordinator.start();
     logger.info(`初始化监控任务 ${JSON.stringify({count: monitors.length})}`);
   } catch (e) {
     logger.error(`初始化监控任务失败 ${JSON.stringify({error: e.message})}`);
   }
 }
 
-setInterval(async () => {
-  if (!pool) return;
+function scheduleMonitorRefresh(): void {
+  if (isUiDevMode()) return;
+  monitorRefreshInterval = setInterval(async () => {
+    if (isUiDevMode() || !pool) return;
 
-  try {
-    const [monitors] = await execQuery(pool!,'SELECT * FROM monitors WHERE enabled = 1');
-    monitors.forEach((monitor: MonitorRow) => {
-      if (!checkIntervals.has(monitor.id)) {
-        startMonitorCheck(monitor);
-      }
-    });
-  } catch (_e) {
-  }
-}, 30000);
+    try {
+      const [monitors] = await execQuery(pool!,'SELECT * FROM monitors WHERE enabled = 1');
+      monitors.forEach((monitor: MonitorRow) => {
+        if (!checkIntervals.has(monitor.id)) {
+          startMonitorCheck(monitor);
+        }
+      });
+    } catch (_e) {
+    }
+  }, 30000);
+}
 
 // ============ 公开 API（不需要认证）============
 registerPublicRoutes(app, {getPool: () => pool, logger});
+registerVersionRoutes(app, {logger, authMiddleware});
 
 // ============ 页面路由（在静态文件服务之前）============
 // 初始化页面
@@ -1619,32 +1399,66 @@ app.get('*', (req: Request, res: Response) => {
 });
 
 // ============ 启动服务器 ============
-async function start(): Promise<void> {
+export async function start(): Promise<Server> {
   loadConfig();
+  initializeRuntimeMode(config?.uiDevMode);
 
-  if (isInstalled()) {
+  if (isUiDevMode()) {
+    const database = config?.database;
+    if (config?.installed !== true || !database ||
+        !['host', 'user', 'name'].every(key => typeof database[key] === 'string' && database[key].trim()) ||
+        typeof database.password !== 'string' ||
+        (database.port !== undefined && (!Number.isInteger(database.port) || database.port < 1 || database.port > 65535))) {
+      throw new Error('UI 开发模式要求配置有效的已有数据库，并设置 installed: true');
+    }
     try {
       await connectDatabaseWrapper();
-      await initializeTables(pool);
-      await initializeChecks();
-      // 启动日志清理定时任务
-      scheduleLogCleanup();
-      logger.info(`服务器启动成功 ${JSON.stringify({port: PORT})}`);
-    } catch (e: unknown) {
-      logger.error(`连接数据库失败 ${JSON.stringify({error: (e as Error).message})}`);
-      logger.warn('请检查数据库配置或删除 config.json 重新安装');
+      await validateExistingDatabase(pool!);
+      logger.info('UI 开发模式 · 只读：已禁用数据库修改、迁移、监控任务、历史清理和通知');
+    } catch (error) {
+      if (pool) await pool.end();
+      pool = null;
+      throw error;
     }
   } else {
-    logger.info('系统未安装，等待初始化设置');
+    if (isInstalled()) {
+      try {
+        await connectDatabaseWrapper();
+        await initializeTables(pool);
+        await initializeChecks();
+        scheduleLogCleanup();
+        logger.info(`服务器启动成功 ${JSON.stringify({port: PORT})}`);
+      } catch (e: unknown) {
+        logger.error(`连接数据库失败 ${JSON.stringify({error: (e as Error).message})}`);
+        if (pool) await pool.end();
+        pool = null;
+        throw e;
+      }
+    } else {
+      logger.info('系统未安装，等待初始化设置');
+    }
+    scheduleMonitorRefresh();
   }
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     logger.info(`HTTP 服务器启动 ${JSON.stringify({ port: PORT })}`);
     logger.info(`Xilore UptimeBot 监控服务已启动，访问地址: http://localhost:${PORT}`);
   });
+  server.once('close', () => {
+    void maintenanceCoordinator.stop();
+    clearInterval(monitorRefreshInterval);
+    clearTimeout(cleanupTimeout);
+    clearInterval(cleanupInterval);
+    for (const timer of checkIntervals.values()) clearInterval(timer);
+    checkIntervals.clear();
+  });
+  return server;
 }
 
-start().catch((error: Error) => {
-  logger.error(`服务器启动失败 ${JSON.stringify({error: error.message, stack: error.stack})}`);
-  process.exit(1);
-});
+// 导入应用时不连接数据库或注册任务，便于使用隔离配置验证启动行为。
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  start().catch((error: Error) => {
+    logger.error(`服务器启动失败 ${JSON.stringify({error: error.message, stack: error.stack})}`);
+    process.exit(1);
+  });
+}

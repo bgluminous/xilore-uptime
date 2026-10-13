@@ -48,6 +48,76 @@ export interface CheckHistoryRow {
   response_time?: number | null;
   message?: string | null;
   checked_at?: Date | string;
+  in_maintenance?: number;
+  stats_excluded?: number;
+}
+
+export type ContentChannel = 'email' | 'webhook' | 'feishu';
+
+export interface AnnouncementRow {
+  id: number;
+  title: string;
+  body: string;
+  state: 'draft' | 'published' | 'archived';
+  pinned: number;
+  channels: string;
+  revision: number;
+  published_ms: number | null;
+  created_ms: number;
+  updated_ms: number;
+}
+
+/** 时间使用 UTC epoch 毫秒，避免 MySQL session 和进程时区差异。 */
+export interface MaintenanceRow {
+  id: number;
+  title: string;
+  body: string;
+  starts_ms: number;
+  ends_ms: number | null;
+  cancelled_ms: number | null;
+  continue_checks: number;
+  suppress_alerts: number;
+  exclude_stats: number;
+  is_public: number;
+  channels: string;
+  revision: number;
+  phase: 'scheduled' | 'active' | 'completed' | 'cancelled';
+  created_ms: number;
+  updated_ms: number;
+}
+
+export interface MaintenanceMembership extends MaintenanceRow {
+  monitor_id: number;
+}
+
+/** maintenance_runtime 表；保留跨进程的静默基线及待复检状态。 */
+export interface MaintenanceRuntimeRow {
+  monitor_id: number;
+  silenced: number;
+  checks_paused: number;
+  baseline_status: CheckHistoryRow['status'] | 'unknown' | null;
+  recheck_pending: number;
+  observed_ms: number | null;
+}
+
+/** maintenance_monitors 表，保存创建或预约编辑时选择的具体监控集合。 */
+export interface MaintenanceMonitorRow {
+  maintenance_id: number;
+  monitor_id: number;
+}
+
+export interface ContentDeliveryRow {
+  id: number;
+  event_key: string;
+  owner_type: 'announcement' | 'maintenance' | 'monitor';
+  owner_id: number;
+  channel: ContentChannel;
+  payload: string;
+  state: 'pending' | 'sending' | 'sent' | 'failed' | 'skipped';
+  attempts: number;
+  next_attempt_ms: number;
+  lease_until_ms: number | null;
+  last_error: string | null;
 }
 
 /** settings 表 */

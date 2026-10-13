@@ -1,8 +1,10 @@
 import type { Express, Request, Response } from 'express';
-import type { Pool } from 'mysql2/promise';
+import type { DatabaseClient } from '../core/db-utils.js';
 import type { MonitorGroupRow, MonitorRow, UptimeAggRow } from '../core/db-types.js';
 import { execQuery } from '../core/db-utils.js';
 import { buildStatusBars24h } from '../features/status-bars.js';
+import { loadResponseStats24h } from '../features/response-stats.js';
+import {decorateMaintenance, loadMaintenanceIntervals, loadOverviewStats} from '../features/maintenance.js';
 
 interface RouteLogger {
   warn(message: string): void;
@@ -10,7 +12,7 @@ interface RouteLogger {
 }
 
 interface PublicRoutesContext {
-  getPool(): Pool | null;
+  getPool(): DatabaseClient | null;
   logger: RouteLogger;
 }
 
@@ -66,6 +68,7 @@ export function registerPublicRoutes(app: Express, ctx: PublicRoutesContext): vo
   });
 
   app.get('/api/public/monitors', async (req: Request, res: Response) => {
+    const endMs = Date.now();
     try {
       const [rows] = await execQuery(ctx.getPool()!,
         'SELECT id, name, status, group_id, enabled, last_response_time, last_check FROM monitors WHERE is_public = 1 ORDER BY group_id, created_at DESC'
@@ -80,10 +83,10 @@ export function registerPublicRoutes(app: Express, ctx: PublicRoutesContext): vo
                   COUNT(*)                                           as total_checks,
                   SUM(IF(status = 'up' OR status = 'warning', 1, 0)) as up_checks
            FROM check_history
-           WHERE checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+           WHERE checked_at >= ? AND checked_at < ? AND stats_excluded = 0
              AND monitor_id IN (${inPlaceholders})
            GROUP BY monitor_id`,
-          ids
+          [new Date(endMs - 24 * 3600000), new Date(endMs), ...ids]
         );
         uptimeRows.forEach((r: UptimeAggRow) => {
           uptimeMap.set(r.monitor_id, {
@@ -93,13 +96,18 @@ export function registerPublicRoutes(app: Express, ctx: PublicRoutesContext): vo
         });
       }
 
+      const responseStats = await loadResponseStats24h(ctx.getPool()!, ids, endMs);
       const monitorsWithUptime = rows.map((monitor: MonitorRow) => {
         const u = uptimeMap.get(monitor.id) || {total: 0, up: 0};
         const uptime_24h = u.total > 0 ? (u.up / u.total) * 100 : null;
-        return {...monitor, uptime_24h};
+        return {
+          ...monitor, uptime_24h,
+          avg_response_24h: responseStats.get(monitor.id)?.avgResponse ?? null,
+          p99_response_24h: responseStats.get(monitor.id)?.p99Response ?? null
+        };
       });
 
-      res.json(monitorsWithUptime);
+      res.json(await decorateMaintenance(ctx.getPool()!, monitorsWithUptime, true, endMs));
     } catch (e: unknown) {
       logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
       res.status(500).json({error: (e as Error).message});
@@ -116,7 +124,7 @@ export function registerPublicRoutes(app: Express, ctx: PublicRoutesContext): vo
 
       const inPlaceholders = ids.map(() => '?').join(',');
       const [historyRows] = await execQuery(ctx.getPool()!,
-        `SELECT monitor_id, status, checked_at, message
+        `SELECT monitor_id, status, checked_at, message, in_maintenance, stats_excluded
          FROM check_history
          WHERE checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
            AND monitor_id IN (${inPlaceholders})
@@ -124,56 +132,20 @@ export function registerPublicRoutes(app: Express, ctx: PublicRoutesContext): vo
         ids
       );
 
-      res.json(buildStatusBars24h(ids, historyRows));
+      const endMs = Date.now();
+      const maintenance = await loadMaintenanceIntervals(ctx.getPool()!, ids, endMs - 86400000, endMs);
+      // 原始错误消息可能包含目标地址；公开状态条只展示状态和聚合指标。
+      res.json(buildStatusBars24h(ids, historyRows.map(row => ({...row, message: null})), maintenance, endMs));
     } catch (e: unknown) {
       logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
       res.status(500).json({error: (e as Error).message});
     }
   });
 
-  app.get('/api/public/stats', async (req: Request, res: Response) => {
+  app.get('/api/public/stats', async (_req: Request, res: Response) => {
     try {
-      const [rows] = await execQuery(ctx.getPool()!,
-        `SELECT COUNT(*)                          as total,
-                SUM(IF(status = 'up', 1, 0))      as up,
-                SUM(IF(status = 'down', 1, 0))    as down,
-                SUM(IF(status = 'unknown', 1, 0)) as unknown
-         FROM monitors
-         WHERE is_public = 1
-           AND enabled = 1`
-      );
-
-      const stats = rows[0] || {total: 0, up: 0, down: 0, unknown: 0};
-
-      const [uptimeRows] = await execQuery(ctx.getPool()!,
-        `SELECT m.id,
-                COUNT(h.id)                                            as total_checks,
-                SUM(IF(h.status = 'up' OR h.status = 'warning', 1, 0)) as up_checks
-         FROM monitors m
-                  LEFT JOIN check_history h ON m.id = h.monitor_id
-             AND h.checked_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-         WHERE m.is_public = 1
-           AND m.enabled = 1
-         GROUP BY m.id`
-      );
-
-      let totalUptime = 0;
-      let monitorCount = 0;
-
-      uptimeRows.forEach((row: UptimeAggRow) => {
-        if (row.total_checks > 0) {
-          const uptime = (row.up_checks / row.total_checks) * 100;
-          totalUptime += uptime;
-          monitorCount++;
-        }
-      });
-
-      stats.uptime_24h = monitorCount > 0 ? (totalUptime / monitorCount) : 100;
-
-      res.json(stats);
-    } catch (e) {
-      logger.error(`公开API错误 ${JSON.stringify({path: req.path, method: req.method, error: (e as Error).message})}`);
-      res.status(500).json({error: (e as Error).message});
-    }
+      const stats = await loadOverviewStats(ctx.getPool()!, true);
+      res.json({...stats, uptime_24h: stats.avgUptime24h});
+    } catch { res.status(500).json({error: '公开统计数据读取失败'}); }
   });
 }

@@ -1,5 +1,5 @@
 import type { Express, RequestHandler, Request, Response } from 'express';
-import type { Pool } from 'mysql2/promise';
+import type { DatabaseClient } from '../core/db-utils.js';
 import type { MonitorGroupRow } from '../core/db-types.js';
 import { execQuery } from '../core/db-utils.js';
 
@@ -10,7 +10,7 @@ interface RouteLogger {
 }
 
 interface GroupRoutesContext {
-  getPool(): Pool;
+  getPool(): DatabaseClient;
   logger: RouteLogger;
   authMiddleware: RequestHandler;
 }

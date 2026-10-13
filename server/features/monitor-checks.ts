@@ -6,6 +6,7 @@ import net from 'net';
 import { exec } from 'child_process';
 import { URL } from 'url';
 import type { MonitorRow } from '../core/db-types.js';
+import { assertWritable } from '../core/runtime-mode.js';
 
 export interface CheckResult {
   status: string;
@@ -278,6 +279,7 @@ async function checkPing(target: string, timeoutSeconds: number): Promise<CheckR
 }
 
 export async function singleCheck(monitor: MonitorRow, logger: CheckLogger): Promise<CheckResult> {
+  assertWritable();
   const timeout = monitor.timeout_seconds || 10;
   const expectedStatus = monitor.expected_status || 200;
 

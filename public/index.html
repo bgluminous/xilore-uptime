@@ -6,7 +6,8 @@
   <title>服务状态监控 - Xilore Uptime</title>
   <link rel="icon" href="/favicon.ico?v=1">
   <link rel="icon" href="/favicon.png?v=1" type="image/png">
-  <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/utils.js"></script>
 </head>
 <body>
   <!-- 安装向导 -->
@@ -19,7 +20,7 @@
         <h1>Xilore Uptime</h1>
         <p>安装向导</p>
       </div>
-      
+
       <div class="setup-steps">
         <div class="step active" data-step="1">
           <div class="step-number">1</div>
@@ -36,13 +37,13 @@
           <span>完成</span>
         </div>
       </div>
-      
+
       <!-- 步骤1: 数据库配置 -->
       <div class="setup-step-content active" id="step-1">
         <h2>数据库配置</h2>
         <p class="step-desc">请输入 MySQL 数据库连接信息</p>
-        
-        <form id="db-form">
+
+        <form id="db-form" data-ui-write-form data-ui-pending inert>
           <div class="form-row">
             <div class="form-group">
               <label for="db-host">主机地址</label>
@@ -53,64 +54,64 @@
               <input type="number" id="db-port" required placeholder="3306">
             </div>
           </div>
-          
+
           <div class="form-group">
             <label for="db-name">数据库名</label>
             <input type="text" id="db-name" required placeholder="uptime">
           </div>
-          
+
           <div class="form-group">
             <label for="db-user">用户名</label>
             <input type="text" id="db-user" required placeholder="uptime">
           </div>
-          
+
           <div class="form-group">
             <label for="db-password">密码</label>
             <input type="password" id="db-password" placeholder="数据库密码">
           </div>
-          
+
           <div class="form-actions">
-            <button type="button" class="btn-secondary" onclick="setup.testDatabase()">测试连接</button>
+            <button type="button" class="btn-secondary" data-ui-write onclick="setup.testDatabase()">测试连接</button>
             <button type="submit" class="btn-primary" disabled id="btn-step1-next">下一步</button>
           </div>
         </form>
-        
+
         <div class="test-result" id="db-test-result"></div>
       </div>
-      
+
       <!-- 步骤2: 管理员账户 -->
       <div class="setup-step-content" id="step-2">
         <h2>创建管理员账户</h2>
         <p class="step-desc">设置系统管理员的登录信息</p>
-        
-        <form id="admin-form">
+
+        <form id="admin-form" data-ui-write-form data-ui-pending inert>
           <div class="form-group">
             <label for="admin-username">用户名</label>
             <input type="text" id="admin-username" required minlength="3" placeholder="至少3个字符">
           </div>
-          
+
           <div class="form-group">
             <label for="admin-email">邮箱（可选）</label>
             <input type="email" id="admin-email" placeholder="用于接收通知">
           </div>
-          
+
           <div class="form-group">
             <label for="admin-password">密码</label>
             <input type="password" id="admin-password" required minlength="6" placeholder="至少6个字符">
           </div>
-          
+
           <div class="form-group">
             <label for="admin-password-confirm">确认密码</label>
             <input type="password" id="admin-password-confirm" required placeholder="再次输入密码">
           </div>
-          
+
           <div class="form-actions">
             <button type="button" class="btn-secondary" onclick="setup.prevStep()">上一步</button>
             <button type="submit" class="btn-primary">完成安装</button>
           </div>
         </form>
       </div>
-      
+
       <!-- 步骤3: 完成 -->
       <div class="setup-step-content" id="step-3">
         <div class="setup-complete">
@@ -122,131 +123,412 @@
       </div>
     </div>
   </div>
-  
+
   <!-- 登录页面 -->
   <div id="login-page" class="login-container" style="display: none;">
-    <div class="login-card">
-      <div class="login-header">
-        <div class="logo-icon">
-          <img src="/favicon.png" alt="Xilore Uptime">
-        </div>
-        <h1>Xilore Uptime</h1>
+    <aside class="login-story">
+      <a class="logo" href="/manage" aria-label="Xilore Uptime 管理首页"><img src="/favicon.png" alt=""><span class="logo-text">Xilore<span class="logo-subtitle">UPTIME MONITOR</span></span></a>
+      <div class="login-story-copy"><span class="eyebrow">A LITTLE SIGNAL. A LOT OF PEACE.</span><h2>每一次心跳，<br>都值得被看见。</h2><p>让服务的每一刻在线，都有迹可循。<br>简单、专注，为你的服务持续守候。</p></div>
+      <div class="signal-art" aria-hidden="true"><div class="signal-ring"></div><div class="signal-ring"></div><div class="signal-ring"></div><div class="signal-center"><span data-ui-icon="activity"></span></div><span class="signal-node node-one"></span><span class="signal-node node-two"></span><span class="signal-node node-three"></span></div>
+      <div class="login-story-footer"><span class="live-dot"></span> HTTP(S) <span>·</span> TCP <span>·</span> ICMP PING</div>
+    </aside>
+    <div class="login-form-panel">
+      <div class="auth-topbar"><a class="btn-text" href="/"><span data-ui-icon="arrow"></span> 公开状态页</a><button class="btn-theme" type="button" onclick="ui.theme.toggle()" aria-label="切换主题" title="切换主题"><span class="icon-sun" data-ui-icon="sun"></span><span class="icon-moon" data-ui-icon="moon"></span></button></div>
+      <div class="login-card">
+        <div class="login-header"><div class="logo-icon"><img src="/favicon.png" alt="Xilore Uptime"></div><span class="eyebrow">WELCOME BACK</span><h1>欢迎回来</h1><p>登录 Xilore Uptime，掌握服务的每一刻。</p></div>
+        <form id="login-form">
+          <div class="form-group"><label for="login-username">用户名</label><input type="text" id="login-username" required autocomplete="username" placeholder="输入你的用户名" autofocus></div>
+          <div class="form-group"><label for="login-password">密码</label><input type="password" id="login-password" required autocomplete="current-password" placeholder="输入你的密码"></div>
+          <button type="submit" class="btn-primary full-width">进入工作台 <span data-ui-icon="arrow"></span></button>
+        </form>
+        <div class="login-error" id="login-error" role="alert"></div>
+        <p class="auth-footnote"><span data-ui-icon="shield"></span> 安全连接，安心掌控</p>
       </div>
-      
-      <form id="login-form">
-        <div class="form-group">
-          <label for="login-username">用户名</label>
-          <input type="text" id="login-username" required autofocus>
-        </div>
-        
-        <div class="form-group">
-          <label for="login-password">密码</label>
-          <input type="password" id="login-password" required>
-        </div>
-        
-        <button type="submit" class="btn-primary full-width">登录</button>
-      </form>
-      
-      <div class="login-error" id="login-error"></div>
+      <p class="auth-copyright">Xilore Uptime · 为每一次在线而生</p>
     </div>
   </div>
-  
+
   <!-- 主应用 -->
   <div class="app" id="main-app" style="display: none;">
-    <!-- 顶部导航 -->
-    <header class="top-header">
-      <div class="header-left">
-        <div class="logo">
-          <img src="/favicon.png" alt="Xilore Uptime">
-          <span class="logo-text"><span class="logo-brand">Xilore </span>Uptime</span>
-        </div>
+    <a class="skip-link" href="#main-content">跳转到主要内容</a>
+    <button class="sidebar-backdrop" type="button" onclick="ui.toggleSidebar(false)" aria-label="关闭导航"></button>
+    <aside class="app-sidebar" id="app-sidebar" aria-label="工作台导航">
+      <div class="sidebar-brand"><a class="logo" href="/manage" aria-label="Xilore Uptime 管理首页"><img src="/favicon.png" alt=""><span class="logo-text">Xilore<span class="logo-subtitle">UPTIME MONITOR</span></span></a><button class="sidebar-close btn-icon" type="button" onclick="ui.toggleSidebar(false)" aria-label="关闭导航">×</button></div>
+      <div class="workspace-label">工作空间 <span>WORKSPACE</span></div>
+      <nav class="sidebar-nav">
+        <a class="nav-item active" href="#overview" data-workspace-link="overview" aria-current="page"><span data-ui-icon="grid"></span><span>监控概览</span><span class="nav-count" id="nav-monitor-count">0</span></a>
+        <a class="nav-item" href="#groups" data-workspace-link="groups"><span data-ui-icon="folder"></span><span>分组管理</span></a>
+        <a class="nav-item" href="#announcements" data-workspace-link="announcements"><span data-ui-icon="file"></span><span>公告管理</span></a>
+        <a class="nav-item" href="#maintenances" data-workspace-link="maintenances"><span data-ui-icon="clock"></span><span>维护管理</span></a>
+        <a class="nav-item" href="/" target="_blank" rel="noopener noreferrer"><span data-ui-icon="globe"></span><span>公开状态页</span><span class="nav-external"><span data-ui-icon="external"></span></span></a>
+        <div class="nav-divider"></div>
+        <a class="nav-item" href="#settings" data-workspace-link="settings"><span data-ui-icon="settings"></span><span>系统设置</span></a>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="sidebar-note"><div class="connection-status"><span class="live-dot"></span><span>正在连接服务</span></div><p>每 30 秒同步最新状态</p><div class="sync-track" aria-hidden="true"><span></span></div></div>
+        <button class="sidebar-version" id="sidebar-version" type="button" onclick="app.showWorkspaceView('settings', {updateHistory: true, focus: true}); app.switchSettingsSection('about')" hidden>
+          <span id="sidebar-version-text">版本</span>
+          <span class="sidebar-version-badge" id="sidebar-version-badge" hidden>有更新</span>
+        </button>
+        <div class="user-menu"><span class="user-avatar" data-ui-icon="user"></span><div class="user-info"><span id="current-user">Admin</span><span>工作空间管理员</span></div><button class="btn-icon btn-logout" onclick="auth.logout()" title="退出登录" aria-label="退出登录"><span data-ui-icon="logout"></span></button></div>
       </div>
-      <div class="header-right">
-        <button class="btn-flat" onclick="app.refreshAll()" id="btn-refresh" title="全部检测">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M23 4v6h-6M1 20v-6h6"/>
-            <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
-          </svg>
-          <span class="header-nav-label">全部检测</span>
-        </button>
-        <button class="btn-flat" onclick="app.showGroupModal()" title="管理分组">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
-          </svg>
-          <span class="header-nav-label">分组</span>
-        </button>
-        <button class="btn-flat" onclick="app.showSettingsModal()" title="设置">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="3"/>
-            <path d="M12 1v6m0 6v6M5.64 5.64l4.24 4.24m4.24 4.24l4.24 4.24M1 12h6m6 0h6M5.64 18.36l4.24-4.24m4.24-4.24l4.24-4.24"/>
-          </svg>
-          <span class="header-nav-label">设置</span>
-        </button>
-        <button class="btn-primary btn-add-monitor" onclick="app.showAddModal()" title="添加监控">
-          <span class="btn-icon-inline" id="btn-icon-add"></span>
-          <span class="header-nav-label">添加监控</span>
-        </button>
-        <button class="btn-theme" onclick="theme.toggle()" title="切换主题">
-          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="5"/>
-            <line x1="12" y1="1" x2="12" y2="3"/>
-            <line x1="12" y1="21" x2="12" y2="23"/>
-            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
-            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
-            <line x1="1" y1="12" x2="3" y2="12"/>
-            <line x1="21" y1="12" x2="23" y2="12"/>
-            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
-            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
-          </svg>
-          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-          </svg>
-        </button>
-        <div class="user-menu">
-          <span id="current-user" class="header-nav-label">Admin</span>
-          <button class="btn-text btn-logout" onclick="auth.logout()" title="退出">
-            <svg class="btn-logout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-              <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
-              <polyline points="16 17 21 12 16 7"/>
-              <line x1="21" y1="12" x2="9" y2="12"/>
-            </svg>
-            <span class="header-nav-label">退出</span>
-          </button>
-        </div>
-      </div>
-    </header>
-    
-    <!-- 主内容区 -->
-    <main class="main-content">
-      <!-- 统计卡片 -->
-      <div class="stats-row">
-        <div class="stat-card">
-          <span class="stat-value" id="stat-total">0</span>
-          <span class="stat-label"><span class="stat-icon" id="stat-icon-total"></span> 总监控</span>
-        </div>
-        <div class="stat-card up">
-          <span class="stat-value" id="stat-up">0</span>
-          <span class="stat-label"><span class="stat-icon" id="stat-icon-up"></span> 在线</span>
-        </div>
-        <div class="stat-card down">
-          <span class="stat-value" id="stat-down">0</span>
-          <span class="stat-label"><span class="stat-icon" id="stat-icon-down"></span> 离线</span>
-        </div>
-        <div class="stat-card paused">
-          <span class="stat-value" id="stat-paused">0</span>
-          <span class="stat-label"><span class="stat-icon" id="stat-icon-paused"></span> 暂停</span>
-        </div>
-        <div class="stat-card uptime">
-          <span class="stat-value" id="stat-uptime">-</span>
-          <span class="stat-label"><span class="stat-icon" id="stat-icon-uptime"></span> 24小时平均</span>
-        </div>
-      </div>
-      
-      <!-- 监控列表 -->
-      <div class="monitor-list" id="monitor-list"></div>
-    </main>
+    </aside>
+
+    <div class="app-workspace">
+      <header class="top-header"><div class="header-inner">
+        <div class="header-breadcrumb"><button class="btn-icon sidebar-toggle" id="sidebar-toggle" type="button" onclick="ui.toggleSidebar()" aria-label="打开导航" aria-expanded="false" aria-controls="app-sidebar"><span data-ui-icon="menu"></span></button><span class="breadcrumb-home">工作空间</span><span data-ui-icon="chevron"></span><span id="workspace-breadcrumb">监控概览</span></div>
+        <div class="header-right"><span class="header-caption">让每一次在线，都被看见。</span><button class="btn-theme" type="button" onclick="ui.theme.toggle()" aria-label="切换主题" title="切换主题"><span class="icon-sun" data-ui-icon="sun"></span><span class="icon-moon" data-ui-icon="moon"></span></button><a class="btn-icon" href="/" target="_blank" rel="noopener noreferrer" title="打开公开状态页" aria-label="打开公开状态页"><span data-ui-icon="external"></span></a></div>
+      </div></header>
+
+      <main class="main-content" id="main-content" tabindex="-1">
+        <section class="workspace-view" id="overview-view" data-workspace-view="overview" aria-labelledby="overview-heading">
+        <div class="page-heading"><div><div class="eyebrow">YOUR SERVICES, AT A GLANCE</div><h1 id="overview-heading" tabindex="-1">监控概览<span class="heading-dot">.</span></h1><p>一眼掌握服务状态，安心专注重要的事。</p></div><button class="btn-primary btn-add-monitor" data-ui-write onclick="app.showAddModal()" title="添加监控"><span class="btn-icon-inline" id="btn-icon-add"></span><span>添加监控</span></button></div>
+        <section class="health-banner" id="health-banner" data-state="loading" aria-live="polite">
+        <div class="health-symbol" id="health-symbol"><span data-ui-icon="activity"></span></div>
+        <div class="health-copy"><div class="eyebrow">SYSTEM STATUS</div><h2 id="health-title">正在读取服务状态</h2><p id="health-description">连接服务，收集最新的检测结果。</p></div>
+        <div class="health-visual" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit-core"><span data-ui-icon="activity"></span></div><span class="orbit-dot"></span></div>
+      </section>
+        <section class="stats-row" aria-label="监控统计">
+          <div class="stat-card"><span class="stat-label"><span class="stat-icon" id="stat-icon-total"></span>总监控</span><span class="stat-value" id="stat-total">—</span><span class="stat-caption">所有监控项目</span></div>
+          <div class="stat-card up"><span class="stat-label"><span class="stat-icon" id="stat-icon-up"></span>运行正常</span><span class="stat-value" id="stat-up">—</span><span class="stat-caption">服务正在稳定运行</span></div>
+          <div class="stat-card down"><span class="stat-label"><span class="stat-icon" id="stat-icon-down"></span>服务离线</span><span class="stat-value" id="stat-down">—</span><span class="stat-caption">需要关注的服务</span></div>
+          <div class="stat-card paused"><span class="stat-label"><span class="stat-icon" id="stat-icon-paused"></span>已暂停</span><span class="stat-value" id="stat-paused">—</span><span class="stat-caption">暂时停止检测</span></div>
+          <div class="stat-card uptime"><span class="stat-label"><span class="stat-icon" id="stat-icon-uptime"></span>24 小时平均可用率</span><span class="stat-value" id="stat-uptime">—</span><span class="stat-caption">持续守护每一次在线</span></div>
+        </section>
+        <section class="monitors-section" aria-label="监控服务">
+          <div class="section-heading"><div><h2>监控服务 <span class="section-count" id="monitor-result-count">0</span></h2><span class="sync-label" id="last-sync">等待首次同步</span></div><button class="btn-secondary" data-ui-write onclick="app.refreshAll()" id="btn-refresh" title="全部检测"><span data-ui-icon="refresh"></span><span>全部检测</span></button></div>
+          <div class="monitor-toolbar"><label class="search-field" for="monitor-search"><span data-ui-icon="search"></span><input type="search" id="monitor-search" placeholder="搜索监控名称或地址…" autocomplete="off"><kbd>/</kbd></label><label class="group-filter-label" for="group-filter"><span data-ui-icon="folder"></span><select id="group-filter" aria-label="按分组筛选"><option value="all">所有分组</option></select></label></div>
+          <div class="monitor-filter-row"><div class="filter-tabs" aria-label="按监控状态筛选"><button class="filter-tab active" type="button" data-filter="all" aria-pressed="true">全部<span data-filter-count="all">0</span></button><button class="filter-tab" type="button" data-filter="up" aria-pressed="false">正常<span data-filter-count="up">0</span></button><button class="filter-tab" type="button" data-filter="down" aria-pressed="false">离线<span data-filter-count="down">0</span></button><button class="filter-tab" type="button" data-filter="warning" aria-pressed="false">波动<span data-filter-count="warning">0</span></button><button class="filter-tab" type="button" data-filter="unknown" aria-pressed="false">待检测<span data-filter-count="unknown">0</span></button><button class="filter-tab" type="button" data-filter="maintenance" aria-pressed="false">维护<span data-filter-count="maintenance">0</span></button><button class="filter-tab" type="button" data-filter="paused" aria-pressed="false">暂停<span data-filter-count="paused">0</span></button></div><div class="status-legend" aria-label="状态条图例"><span><i class="legend-dot up"></i>正常</span><span><i class="legend-dot warning"></i>波动</span><span><i class="legend-dot down"></i>离线</span><span><i class="legend-dot maintenance"></i>维护</span><span><i class="legend-dot empty"></i>无数据</span></div></div>
+          <div class="monitor-list" id="monitor-list"><div class="loading-state"><span class="loading-spinner"></span><p>正在连接你的服务…</p></div></div>
+        </section>
+        </section>
+        <section class="workspace-view" id="announcements-view" data-workspace-view="announcements" aria-labelledby="announcements-heading" hidden></section>
+        <section class="workspace-view" id="maintenances-view" data-workspace-view="maintenances" aria-labelledby="maintenances-heading" hidden></section>
+        <section class="workspace-view" id="groups-view" data-workspace-view="groups" aria-labelledby="groups-heading" hidden>
+          <div class="page-heading"><div><div class="eyebrow">ORGANIZE YOUR SERVICES</div><h1 id="groups-heading" tabindex="-1">分组管理<span class="heading-dot">.</span></h1><p>整理服务分组，统一管理展示顺序。</p></div></div>
+          <div class="group-page-layout">
+            <section class="group-list-panel" aria-labelledby="group-list-heading">
+              <div class="group-panel-heading"><h2 id="group-list-heading">所有分组 <span class="section-count" id="group-page-count">0</span></h2><span class="group-list-hint">按列表顺序展示</span></div>
+              <div class="group-list" id="group-list"><div class="loading-state"><span class="loading-spinner"></span><p>正在加载分组…</p></div></div>
+            </section>
+            <aside class="group-add-section" aria-labelledby="group-add-heading">
+              <h2 class="group-add-label" id="group-add-heading"><span data-ui-icon="folder"></span>新建分组</h2>
+              <p class="group-add-description">将相关服务放在一起，查看和管理更方便。</p>
+              <form class="group-add-form" id="group-add-form" data-ui-write-form data-ui-pending inert>
+                <label for="new-group-name">分组名称</label>
+                <div class="group-input-wrapper">
+                  <input type="text" id="new-group-name" placeholder="例如：核心服务、基础设施" required>
+                  <button type="submit" class="btn-primary btn-add-group"><span data-ui-icon="plus"></span>添加分组</button>
+                </div>
+              </form>
+              <div class="group-page-help"><p>拖动左侧手柄调整分组顺序，也可使用上下移动按钮。</p><p>删除分组后，其中的监控将移至「未分组」。</p></div>
+            </aside>
+          </div>
+        </section>
+        <section class="workspace-view" id="settings-view" data-workspace-view="settings" aria-labelledby="settings-heading" hidden>
+          <div class="page-heading"><div><div class="eyebrow">MAKE IT YOUR WORKSPACE</div><h1 id="settings-heading" tabindex="-1">系统设置<span class="heading-dot">.</span></h1><p>管理工作空间、账户安全与通知方式。</p></div></div>
+          <div class="settings-panel-container">
+            <!-- 左侧菜单 -->
+            <nav class="settings-menu" aria-label="设置分类">
+              <p class="settings-menu-label">工作空间</p>
+              <button type="button" class="settings-menu-item active" data-section="general" aria-controls="settings-section-general" aria-current="true" onclick="app.switchSettingsSection('general')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                  <line x1="9" y1="3" x2="9" y2="21"/>
+                </svg>
+                <span>基础设置</span>
+              </button>
+              <button type="button" class="settings-menu-item" data-section="admin" aria-controls="settings-section-admin" onclick="app.switchSettingsSection('admin')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                  <circle cx="12" cy="7" r="4"/>
+                </svg>
+                <span>管理员账户</span>
+              </button>
+              <p class="settings-menu-label">通知渠道</p>
+              <button type="button" class="settings-menu-item" data-section="email" aria-controls="settings-section-email" onclick="app.switchSettingsSection('email')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                  <polyline points="22,6 12,13 2,6"/>
+                </svg>
+                <span>邮件配置</span>
+              </button>
+              <button type="button" class="settings-menu-item" data-section="webhook" aria-controls="settings-section-webhook" onclick="app.switchSettingsSection('webhook')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                  <path d="M5 12h14M12 5l7 7-7 7"/>
+                </svg>
+                <span>Webhook 配置</span>
+              </button>
+              <button type="button" class="settings-menu-item" data-section="feishu" aria-controls="settings-section-feishu" onclick="app.switchSettingsSection('feishu')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span>飞书配置</span>
+              </button>
+              <p class="settings-menu-label">关于</p>
+              <button type="button" class="settings-menu-item" data-section="about" aria-controls="settings-section-about" onclick="app.switchSettingsSection('about')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="12" y1="8" x2="12" y2="12"/>
+                  <circle cx="12" cy="16" r="0.9" fill="currentColor" stroke="none"/>
+                </svg>
+                <span>版本信息</span>
+              </button>
+              <p class="settings-menu-label">数据管理</p>
+              <button type="button" class="settings-menu-item" data-section="danger" aria-controls="settings-section-danger" onclick="app.switchSettingsSection('danger')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/>
+                  <circle cx="12" cy="17" r="0.9" fill="currentColor" stroke="none"/>
+                </svg>
+                <span>危险操作</span>
+              </button>
+            </nav>
+
+            <!-- 设置内容 -->
+            <div class="settings-content">
+              <div class="settings-load-state" id="settings-load-state" role="status">
+                <span class="loading-spinner" id="settings-load-spinner" aria-hidden="true"></span>
+                <p id="settings-load-message">正在加载系统设置…</p>
+                <button class="btn-secondary" id="settings-retry-btn" type="button" onclick="app.loadSettings()" hidden>重新加载</button>
+              </div>
+              <form id="settings-form" data-ui-write-form data-ui-pending inert hidden>
+                <!-- 基础设置 -->
+                <div class="settings-section" id="settings-section-general" aria-labelledby="settings-general-heading">
+                  <div class="settings-section-heading"><h2 id="settings-general-heading">基础设置</h2><p>定制你的工作空间与数据保留策略。</p></div>
+                  <div class="form-group">
+                    <label for="public-page-title">公开展示页面标题</label>
+                    <input type="text" id="public-page-title" placeholder="服务状态监控" required>
+                    <p class="form-hint">此标题将显示在公开展示页面（/）的顶部</p>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="log-retention-days">日志保留时间（天）</label>
+                    <input type="number" id="log-retention-days" placeholder="30" min="30" required>
+                    <p class="form-hint">超过此时间的检测历史记录将在每天00:00自动删除（最小30天）</p>
+                  </div>
+                </div>
+
+                <!-- 管理员账户 -->
+                <div class="settings-section" id="settings-section-admin" aria-labelledby="settings-admin-heading" hidden>
+                  <div class="settings-section-heading"><h2 id="settings-admin-heading">管理员账户</h2><p>管理通知接收邮箱与登录安全。</p></div>
+                  <div class="form-group">
+                    <label for="admin-email-settings">管理员邮箱</label>
+                    <input type="email" id="admin-email-settings" placeholder="用于接收通知（可选）">
+                    <p class="form-hint">用于接收系统通知的邮箱地址</p>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="admin-password-settings">新密码</label>
+                    <input type="password" id="admin-password-settings" placeholder="留空则不修改密码" minlength="6">
+                    <p class="form-hint">如需修改密码，请输入新密码（至少6个字符）</p>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="admin-password-confirm-settings">确认新密码</label>
+                    <input type="password" id="admin-password-confirm-settings" placeholder="再次输入新密码">
+                    <p class="form-hint">请再次输入新密码以确认</p>
+                  </div>
+                </div>
+
+                <!-- 邮件配置 -->
+                <div class="settings-section" id="settings-section-email" aria-labelledby="settings-email-heading" hidden>
+                  <div class="settings-section-heading"><h2 id="settings-email-heading">邮件通知</h2><p>通过 SMTP，把重要状态送达你的收件箱。</p></div>
+                  <div class="form-group">
+                    <label for="smtp-host">SMTP 服务器</label>
+                    <input type="text" id="smtp-host" placeholder="例如：smtp.example.com">
+                    <p class="form-hint">邮件服务器的地址</p>
+                  </div>
+
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label for="smtp-port">SMTP 端口</label>
+                      <input type="number" id="smtp-port" placeholder="587" min="1" max="65535">
+                      <p class="form-hint">通常为 587 (TLS) 或 465 (SSL)</p>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="smtp-secure">安全连接</label>
+                      <label class="form-check">
+                        <input type="checkbox" id="smtp-secure">
+                        <span>使用 SSL/TLS</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="smtp-user">SMTP 用户名</label>
+                    <input type="text" id="smtp-user" placeholder="SMTP 登录用户名">
+                    <p class="form-hint">用于登录 SMTP 服务器的用户名</p>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="smtp-password">SMTP 密码</label>
+                    <input type="password" id="smtp-password" placeholder="SMTP 登录密码">
+                    <p class="form-hint">用于登录 SMTP 服务器的密码</p>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="smtp-from">发件人邮箱</label>
+                    <input type="email" id="smtp-from" placeholder="例如：noreply@example.com">
+                    <p class="form-hint">邮件通知的发件人地址</p>
+                  </div>
+
+                  <div class="form-group" style="margin-top: 24px;">
+                    <button type="button" class="btn-secondary" data-ui-write onclick="app.testEmail()" id="test-email-btn">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                        <polyline points="22,6 12,13 2,6"/>
+                      </svg>
+                      测试邮件发送
+                    </button>
+                    <p class="form-hint">点击此按钮将发送一封测试邮件到管理员邮箱</p>
+                  </div>
+                </div>
+
+                <!-- Webhook 配置 -->
+                <div class="settings-section" id="settings-section-webhook" aria-labelledby="settings-webhook-heading" hidden>
+                  <div class="settings-section-heading"><h2 id="settings-webhook-heading">Webhook 通知</h2><p>连接你的工作流，让服务状态及时流转。</p></div>
+                  <div class="form-group">
+                    <label for="webhook-url">Webhook URL</label>
+                    <input type="url" id="webhook-url" placeholder="例如：https://example.com/webhook">
+                    <p class="form-hint">接收通知的 Webhook 地址</p>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="webhook-method">请求方法</label>
+                    <select id="webhook-method">
+                      <option value="POST" selected>POST</option>
+                      <option value="GET">GET</option>
+                      <option value="PUT">PUT</option>
+                      <option value="PATCH">PATCH</option>
+                    </select>
+                    <p class="form-hint">HTTP 请求方法</p>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="webhook-headers">请求头（JSON 格式）</label>
+                    <textarea id="webhook-headers" rows="4" placeholder='{"Authorization": "Bearer token", "X-Custom-Header": "value"}'></textarea>
+                    <p class="form-hint">可选的 HTTP 请求头，JSON 格式（例如：{"Authorization": "Bearer token"}）</p>
+                  </div>
+
+                  <div class="form-group" style="margin-top: 24px;">
+                    <button type="button" class="btn-secondary" data-ui-write onclick="app.testWebhook()" id="test-webhook-btn">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <path d="M5 12h14M12 5l7 7-7 7"/>
+                      </svg>
+                      测试 Webhook
+                    </button>
+                    <p class="form-hint">点击此按钮将发送一个测试 Webhook 请求</p>
+                  </div>
+                </div>
+
+                <!-- 飞书配置 -->
+                <div class="settings-section" id="settings-section-feishu" aria-labelledby="settings-feishu-heading" hidden>
+                  <div class="settings-section-heading"><h2 id="settings-feishu-heading">飞书通知</h2><p>将服务动态同步到团队的飞书群。</p></div>
+                  <div class="form-group">
+                    <label for="feishu-webhook-url">飞书 Webhook URL</label>
+                    <input type="url" id="feishu-webhook-url" placeholder="例如：https://open.feishu.cn/open-apis/bot/v2/hook/xxx">
+                    <p class="form-hint">飞书群自定义机器人的 Webhook 地址</p>
+                  </div>
+
+                  <div class="form-group">
+                    <label for="feishu-secret">签名密钥（可选）</label>
+                    <input type="password" id="feishu-secret" placeholder="机器人安全设置中的签名密钥">
+                    <p class="form-hint">如果飞书机器人启用了“签名校验”，请填写此密钥；留空则不修改已保存密钥</p>
+                  </div>
+
+                  <div class="form-group" style="margin-top: 24px;">
+                    <button type="button" class="btn-secondary" data-ui-write onclick="app.testFeishu()" id="test-feishu-btn">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                      </svg>
+                      测试飞书
+                    </button>
+                    <p class="form-hint">点击此按钮将发送一条测试消息到飞书群</p>
+                  </div>
+                </div>
+
+                <div class="settings-section" id="settings-section-about" aria-labelledby="settings-about-heading" hidden>
+                  <div class="settings-section-heading"><h2 id="settings-about-heading">版本与更新</h2><p>从 GitHub 版本索引查看升级提示与更新日志。</p></div>
+                  <div class="version-card" id="version-card">
+                    <p class="form-hint" id="version-load-message">正在读取版本信息…</p>
+                    <dl class="version-meta" id="version-meta" hidden>
+                      <div><dt>当前版本</dt><dd id="version-current">—</dd></div>
+                      <div><dt>版本编码</dt><dd id="version-code">—</dd></div>
+                      <div><dt>查询平台</dt><dd id="version-platform">—</dd></div>
+                      <div><dt>更新状态</dt><dd id="version-status">—</dd></div>
+                      <div><dt>最近检查</dt><dd id="version-checked-at">尚未检查</dd></div>
+                      <div><dt>版本来源</dt><dd>GitHub 版本索引</dd></div>
+                    </dl>
+                    <p class="form-hint version-check-error" id="version-check-error" role="status" hidden></p>
+                    <div class="version-latest" id="version-latest" hidden>
+                      <h3 id="version-latest-title">已有新版本</h3>
+                      <p id="version-latest-summary"></p>
+                      <div class="version-changelog markdown-content" id="version-changelog"></div>
+                      <a class="btn-primary" id="version-download" target="_blank" rel="noopener noreferrer" hidden>查看镜像版本</a>
+                    </div>
+          <div class="version-actions"><button class="btn-secondary" id="version-retry-btn" type="button" onclick="versions.load({refresh: true})">重新检查</button><span class="form-hint">自动检查间隔 6 小时</span></div>
+                    <p class="form-hint">Docker 部署请由部署者拉取目标版本镜像并重建容器，保留数据目录和运行配置。</p>
+                    <details id="version-history" class="version-history" ontoggle="versions.toggleHistory()">
+                      <summary>历史更新日志</summary>
+                      <p class="form-hint" id="version-history-loading" role="status" hidden>正在读取更新日志…</p>
+                      <div id="version-history-list"></div>
+                      <div class="version-check-error" id="version-history-error" role="status" hidden><span id="version-history-error-text"></span> <button type="button" class="btn-secondary" onclick="versions.loadHistory(versions.historyPage || 1, true)">重试</button></div>
+                      <nav class="content-pagination" id="version-history-paging" aria-label="更新日志分页" hidden>
+                        <button type="button" class="btn-secondary" id="version-history-prev" onclick="versions.loadHistory(versions.historyPage - 1)">上一页</button>
+                        <span id="version-history-page"></span>
+                        <button type="button" class="btn-secondary" id="version-history-next" onclick="versions.loadHistory(versions.historyPage + 1)">下一页</button>
+                      </nav>
+                    </details>
+                  </div>
+                </div>
+
+                <!-- 危险操作 -->
+                <div class="settings-section" id="settings-section-danger" aria-labelledby="settings-danger-heading" hidden>
+                  <div class="settings-section-heading"><h2 id="settings-danger-heading">危险操作</h2><p>这里的操作会永久影响已保存的数据，请谨慎操作。</p></div>
+                  <div class="form-group">
+                    <label>日志表大小</label>
+                    <p class="form-hint" id="log-table-size-text">加载中...</p>
+                  </div>
+                  <div class="form-group">
+                    <label for="delete-all-history-confirm">删除所有检测历史</label>
+                    <p class="form-hint">此操作将永久删除所有监控服务的检测历史记录，且无法恢复。请输入 "DELETE" 以确认。</p>
+                    <p class="form-hint">提示：清空历史记录后，数据库占用空间可能不会立即变小（InnoDB 通常仅标记空间可复用；是否能立刻回收取决于表空间配置与数据库实现）。</p>
+                  </div>
+                  <div class="danger-action-wrapper">
+                    <div class="danger-input-wrapper">
+                      <input type="text" id="delete-all-history-confirm" placeholder="输入 DELETE 以确认" autocomplete="off">
+                    </div>
+                    <button type="button" class="btn-danger" data-ui-write onclick="app.deleteAllHistory()" id="delete-all-history-btn" disabled>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                      </svg>
+                      删除所有历史
+                    </button>
+                  </div>
+                </div>
+
+                <div class="settings-actions" id="settings-page-footer">
+                  <button type="button" class="btn-warning" data-ui-write onclick="app.clearCurrentSettingsConfig()" id="settings-clear-btn" style="display: none;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                      <polyline points="3 6 5 6 21 6"/>
+                      <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                    </svg>
+                    清空配置
+                  </button>
+                  <button type="submit" class="btn-primary" id="settings-save-btn">保存设置</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </section>
+        <footer class="workspace-footer"><div class="workspace-footer-inner"><span>Xilore Uptime <span class="footer-separator">/</span> <span id="workspace-version">版本</span> <span class="footer-separator">/</span> 每一刻，皆可见。</span><span id="workspace-footer-note">状态条展示最近 24 小时的检测记录</span></div></footer>
+      </main>
+    </div>
   </div>
-  
+
   <!-- 添加/编辑监控模态框 -->
   <div class="modal-overlay" id="monitor-modal">
     <div class="modal">
@@ -254,16 +536,16 @@
         <h2 id="modal-title"><span class="modal-icon" id="modal-icon-title"></span> 添加监控</h2>
         <button class="btn-close" onclick="app.closeModal()">×</button>
       </div>
-      
-      <form id="monitor-form">
+
+      <form id="monitor-form" data-ui-write-form data-ui-pending inert>
         <input type="hidden" id="monitor-id">
-        
+
         <div class="form-row">
           <div class="form-group">
             <label for="monitor-name">监控名称</label>
             <input type="text" id="monitor-name" required placeholder="例如：主站点">
           </div>
-          
+
           <div class="form-group">
             <label for="monitor-group">所属分组</label>
             <select id="monitor-group">
@@ -271,7 +553,7 @@
             </select>
           </div>
         </div>
-        
+
         <div class="form-group">
           <label for="monitor-type"><span class="form-icon" id="form-icon-type"></span> 检测类型</label>
           <select id="monitor-type" required onchange="app.togglePortField()">
@@ -280,17 +562,17 @@
             <option value="ping">ICMP Ping</option>
           </select>
         </div>
-        
+
         <div class="form-group">
           <label for="monitor-target"><span class="form-icon" id="form-icon-target"></span> 目标地址</label>
           <input type="text" id="monitor-target" required placeholder="例如：example.com">
         </div>
-        
+
         <div class="form-group" id="port-group" style="display: none;">
           <label for="monitor-port">端口号</label>
           <input type="number" id="monitor-port" min="1" max="65535" placeholder="例如：3306">
         </div>
-        
+
         <div class="form-group" id="expected-status-group">
           <label for="monitor-expected-status">期望状态码</label>
           <select id="monitor-expected-status">
@@ -308,33 +590,33 @@
             <option value="500">500 Internal Server Error</option>
           </select>
         </div>
-        
-        <div class="form-group" id="auth-group" style="display: none;">
-          <label style="margin-bottom: 12px; font-weight: 500;">HTTP Basic Authentication（可选）</label>
+
+        <div class="form-subgroup" id="auth-group" style="display: none;">
+          <span class="form-subgroup-title">HTTP Basic Authentication（可选）</span>
           <div class="form-row">
-            <div class="form-group" style="margin-bottom: 0;">
-              <label for="monitor-auth-username" style="font-size: 0.8rem; font-weight: 400;">用户名</label>
+            <div class="form-group">
+              <label for="monitor-auth-username">用户名</label>
               <input type="text" id="monitor-auth-username" placeholder="用户名">
             </div>
-            <div class="form-group" style="margin-bottom: 0;">
-              <label for="monitor-auth-password" style="font-size: 0.8rem; font-weight: 400;">密码</label>
+            <div class="form-group">
+              <label for="monitor-auth-password">密码</label>
               <input type="password" id="monitor-auth-password" placeholder="密码">
             </div>
           </div>
         </div>
-        
+
         <div class="form-row">
           <div class="form-group">
             <label for="monitor-interval"><span class="form-icon" id="form-icon-interval"></span> 检测间隔（秒）</label>
             <input type="number" id="monitor-interval" value="60" min="10" max="7200">
           </div>
-          
+
           <div class="form-group">
             <label for="monitor-timeout"><span class="form-icon" id="form-icon-timeout"></span> 超时（秒）</label>
             <input type="number" id="monitor-timeout" value="10" min="1" max="60">
           </div>
         </div>
-        
+
         <div class="form-group">
           <label for="monitor-retries"><span class="form-icon" id="form-icon-retries"></span> 重试次数</label>
           <select id="monitor-retries">
@@ -344,42 +626,36 @@
             <option value="3">3 次</option>
           </select>
         </div>
-        
-        <div class="form-group">
-          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-            <input type="checkbox" id="monitor-is-public" style="width: auto; margin: 0;">
+
+        <div class="form-checks">
+          <label class="form-check">
+            <input type="checkbox" id="monitor-is-public">
             <span>公开展示（无需登录即可查看）</span>
           </label>
-        </div>
-        
-        <div class="form-group">
-          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-            <input type="checkbox" id="monitor-email-notification" style="width: auto; margin: 0;">
+
+          <label class="form-check">
+            <input type="checkbox" id="monitor-email-notification">
             <span>邮件提示（状态变化时发送邮件通知）</span>
           </label>
-        </div>
-        
-        <div class="form-group">
-          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-            <input type="checkbox" id="monitor-webhook-notification" style="width: auto; margin: 0;">
+
+          <label class="form-check">
+            <input type="checkbox" id="monitor-webhook-notification">
             <span>Webhook 提示（状态变化时发送 Webhook 通知）</span>
           </label>
-        </div>
 
-        <div class="form-group">
-          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-            <input type="checkbox" id="monitor-feishu-notification" style="width: auto; margin: 0;">
+          <label class="form-check">
+            <input type="checkbox" id="monitor-feishu-notification">
             <span>飞书提示（状态变化时发送飞书通知）</span>
           </label>
         </div>
-        
+
         <div class="form-actions">
           <button type="submit" class="btn-primary">保存</button>
         </div>
       </form>
     </div>
   </div>
-  
+
   <!-- 监控详情模态框 -->
   <div class="modal-overlay" id="detail-modal">
     <div class="modal modal-detail">
@@ -387,14 +663,14 @@
         <div class="detail-header-info">
           <div class="detail-status" id="detail-status"></div>
           <div>
-            <h2 id="detail-title">监控详情</h2>
+            <div class="detail-heading-row"><h2 id="detail-title">监控详情</h2><span id="detail-state-label"></span></div>
             <span class="detail-target" id="detail-target"></span>
           </div>
         </div>
         <button class="btn-close" onclick="app.closeDetailModal()">×</button>
       </div>
-      
-      <div class="detail-content">
+
+      <div class="detail-content" id="detail-content">
         <!-- 基础信息 -->
         <div class="detail-info-grid">
           <div class="detail-info-item">
@@ -426,25 +702,46 @@
             <span class="detail-info-value" id="detail-ssl-days">-</span>
           </div>
         </div>
-        
+
         <!-- 图表区域 -->
         <div class="detail-chart-section">
           <div class="detail-chart-header">
-            <h3><span class="detail-icon" id="detail-icon-chart"></span> 响应时间趋势</h3>
-            <div class="time-range-tabs">
-              <button class="time-tab active" data-range="1h">1小时</button>
-              <button class="time-tab" data-range="24h">24小时</button>
-              <button class="time-tab" data-range="7d">7天</button>
-              <button class="time-tab" data-range="30d">30天</button>
+            <h3><span class="detail-icon" id="detail-icon-chart"></span> 响应时间与检测状态</h3>
+            <div class="time-range-tabs" role="group" aria-label="历史数据时间范围">
+              <button type="button" class="time-tab" data-range="1h" aria-pressed="false">1小时</button>
+              <button type="button" class="time-tab" data-range="6h" aria-pressed="false">6小时</button>
+              <button type="button" class="time-tab" data-range="12h" aria-pressed="false">12小时</button>
+              <button type="button" class="time-tab active" data-range="24h" aria-pressed="true">24小时</button>
+              <button type="button" class="time-tab" data-range="7d" aria-pressed="false">7天</button>
+              <button type="button" class="time-tab" data-range="30d" aria-pressed="false">30天</button>
             </div>
           </div>
+          <div class="detail-range-feedback" id="detail-range-feedback" role="status" aria-live="polite" aria-atomic="true">
+            <span id="detail-range-message">正在加载最近 24 小时的数据…</span>
+            <button type="button" class="btn-text" id="detail-retry-btn" onclick="app.retryDetailData()" hidden>重新加载</button>
+          </div>
+          <div class="detail-chart-legend" id="detail-chart-legend">
+            <span><i class="legend-response" aria-hidden="true"></i>响应时间</span>
+            <span><i class="legend-down" aria-hidden="true"></i>离线</span>
+            <span><i class="legend-warning" aria-hidden="true"></i>波动</span>
+            <span><i class="legend-maintenance" aria-hidden="true"></i>维护</span>
+            <span><i class="legend-empty" aria-hidden="true"></i>无记录</span>
+          </div>
           <div class="detail-chart-container">
-            <canvas id="detail-chart"></canvas>
+            <canvas id="detail-chart" role="img" aria-label="响应时间与检测状态" aria-describedby="detail-chart-legend"></canvas>
+            <div class="detail-chart-placeholder" id="detail-chart-placeholder">
+              <span class="loading-spinner" aria-hidden="true"></span>
+              <span id="detail-chart-placeholder-text">正在加载趋势…</span>
+            </div>
           </div>
           <div class="detail-chart-stats">
             <div class="chart-stat">
               <span class="chart-stat-value" id="detail-stat-avg">-</span>
-              <span class="chart-stat-label"><span class="stat-icon" id="detail-stat-icon-avg"></span> 平均响应</span>
+              <span class="chart-stat-label" id="detail-label-avg"><span class="stat-icon" id="detail-stat-icon-avg"></span> 平均延迟</span>
+            </div>
+            <div class="chart-stat">
+              <span class="chart-stat-value" id="detail-stat-p99">—</span>
+              <span class="chart-stat-label" id="detail-label-p99">P99</span>
             </div>
             <div class="chart-stat">
               <span class="chart-stat-value" id="detail-stat-min">-</span>
@@ -460,12 +757,12 @@
             </div>
           </div>
         </div>
-        
+
         <!-- 历史记录 -->
         <div class="detail-history-section">
           <div class="detail-history-header">
             <h3><span class="detail-icon" id="detail-icon-records"></span> 检测记录</h3>
-            <button class="btn-text danger" onclick="app.clearHistory(app.currentDetailId)" title="清空历史记录">
+            <button class="btn-text danger" data-ui-write onclick="app.clearHistory(app.currentDetailId)" title="清空历史记录">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
                 <polyline points="3 6 5 6 21 6"/>
                 <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
@@ -489,16 +786,16 @@
           </div>
         </div>
       </div>
-      
+
       <div class="detail-footer">
-        <button class="btn-secondary" onclick="app.editMonitor(app.currentDetailId)">
+        <button class="btn-secondary" data-ui-view-config onclick="app.editMonitor(app.currentDetailId)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
             <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
             <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
           </svg>
-          编辑
+          <span data-ui-edit-label>编辑</span>
         </button>
-        <button class="btn-primary" onclick="app.checkNow(app.currentDetailId)">
+        <button class="btn-primary" data-ui-write onclick="app.checkNow(app.currentDetailId)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
             <path d="M23 4v6h-6M1 20v-6h6"/>
             <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
@@ -508,302 +805,13 @@
       </div>
     </div>
   </div>
-  
-  <!-- 分组管理模态框 -->
-  <div class="modal-overlay" id="group-modal">
-    <div class="modal modal-group">
-      <div class="modal-header">
-        <div class="modal-header-content">
-          <h2><span class="modal-icon" id="modal-icon-group"></span> 分组管理</h2>
-        </div>
-        <button class="btn-close" onclick="app.closeGroupModal()">×</button>
-      </div>
-      
-      <div class="group-modal-content">
-        <div class="group-list" id="group-list"></div>
-        
-        <div class="group-add-section">
-          <div class="group-add-label">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-              <line x1="12" y1="5" x2="12" y2="19"/>
-              <line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
-            <span>创建新分组</span>
-          </div>
-          <form class="group-add-form" id="group-add-form">
-            <div class="group-input-wrapper">
-              <label for="new-group-name" class="visually-hidden">分组名称</label>
-              <input type="text" id="new-group-name" placeholder="输入分组名称..." required aria-label="分组名称">
-              <button type="submit" class="btn-primary btn-add-group">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                  <line x1="12" y1="5" x2="12" y2="19"/>
-                  <line x1="5" y1="12" x2="19" y2="12"/>
-                </svg>
-                添加
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </div>
-  </div>
-  
-  <!-- 设置模态框 -->
-  <div class="modal-overlay" id="settings-modal">
-    <div class="modal modal-settings">
-      <div class="modal-header">
-        <div class="modal-header-content">
-          <h2><span class="modal-icon" id="modal-icon-settings"></span> 设置</h2>
-        </div>
-        <button class="btn-close" onclick="app.closeSettingsModal()">×</button>
-      </div>
-      
-      <div class="settings-panel-container">
-        <!-- 左侧菜单 -->
-        <div class="settings-menu">
-          <div class="settings-menu-item active" data-section="general" onclick="app.switchSettingsSection('general')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-              <line x1="9" y1="3" x2="9" y2="21"/>
-            </svg>
-            <span>基础设置</span>
-          </div>
-          <div class="settings-menu-item" data-section="admin" onclick="app.switchSettingsSection('admin')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-              <circle cx="12" cy="7" r="4"/>
-            </svg>
-            <span>管理员账户</span>
-          </div>
-          <div class="settings-menu-item" data-section="email" onclick="app.switchSettingsSection('email')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-              <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-              <polyline points="22,6 12,13 2,6"/>
-            </svg>
-            <span>邮件配置</span>
-          </div>
-          <div class="settings-menu-item" data-section="webhook" onclick="app.switchSettingsSection('webhook')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-              <path d="M5 12h14M12 5l7 7-7 7"/>
-            </svg>
-            <span>Webhook 配置</span>
-          </div>
-          <div class="settings-menu-item" data-section="feishu" onclick="app.switchSettingsSection('feishu')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-            </svg>
-            <span>飞书配置</span>
-          </div>
-          <div class="settings-menu-item" data-section="danger" onclick="app.switchSettingsSection('danger')">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
-              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-              <line x1="12" y1="9" x2="12" y2="13"/>
-              <circle cx="12" cy="17" r="0.9" fill="currentColor" stroke="none"/>
-            </svg>
-            <span>危险操作</span>
-          </div>
-        </div>
-        
-        <!-- 右侧内容 -->
-        <div class="settings-content">
-          <form id="settings-form">
-            <!-- 基础设置 -->
-            <div class="settings-section" id="settings-section-general">
-              <div class="form-group">
-                <label for="public-page-title">公开展示页面标题</label>
-                <input type="text" id="public-page-title" placeholder="服务状态监控" required>
-                <p class="form-hint">此标题将显示在公开展示页面（/）的顶部</p>
-              </div>
-              
-              <div class="form-group">
-                <label for="log-retention-days">日志保留时间（天）</label>
-                <input type="number" id="log-retention-days" placeholder="30" min="30" required>
-                <p class="form-hint">超过此时间的检测历史记录将在每天00:00自动删除（最小30天）</p>
-              </div>
-            </div>
-            
-            <!-- 管理员账户 -->
-            <div class="settings-section" id="settings-section-admin" style="display: none;">
-              <div class="form-group">
-                <label for="admin-email-settings">管理员邮箱</label>
-                <input type="email" id="admin-email-settings" placeholder="用于接收通知（可选）">
-                <p class="form-hint">用于接收系统通知的邮箱地址</p>
-              </div>
-              
-              <div class="form-group">
-                <label for="admin-password-settings">新密码</label>
-                <input type="password" id="admin-password-settings" placeholder="留空则不修改密码" minlength="6">
-                <p class="form-hint">如需修改密码，请输入新密码（至少6个字符）</p>
-              </div>
-              
-              <div class="form-group">
-                <label for="admin-password-confirm-settings">确认新密码</label>
-                <input type="password" id="admin-password-confirm-settings" placeholder="再次输入新密码">
-                <p class="form-hint">请再次输入新密码以确认</p>
-              </div>
-            </div>
-            
-            <!-- 邮件配置 -->
-            <div class="settings-section" id="settings-section-email" style="display: none;">
-              <div class="form-group">
-                <label for="smtp-host">SMTP 服务器</label>
-                <input type="text" id="smtp-host" placeholder="例如：smtp.example.com">
-                <p class="form-hint">邮件服务器的地址</p>
-              </div>
-              
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="smtp-port">SMTP 端口</label>
-                  <input type="number" id="smtp-port" placeholder="587" min="1" max="65535">
-                  <p class="form-hint">通常为 587 (TLS) 或 465 (SSL)</p>
-                </div>
-                
-                <div class="form-group">
-                  <label for="smtp-secure" style="display: block; margin-bottom: 6px; font-size: 0.85rem; font-weight: 500; color: var(--text-secondary);">安全连接</label>
-                  <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 0;">
-                    <input type="checkbox" id="smtp-secure" style="width: auto; margin: 0;">
-                    <span>使用 SSL/TLS</span>
-                  </label>
-                </div>
-              </div>
-              
-              <div class="form-group">
-                <label for="smtp-user">SMTP 用户名</label>
-                <input type="text" id="smtp-user" placeholder="SMTP 登录用户名">
-                <p class="form-hint">用于登录 SMTP 服务器的用户名</p>
-              </div>
-              
-              <div class="form-group">
-                <label for="smtp-password">SMTP 密码</label>
-                <input type="password" id="smtp-password" placeholder="SMTP 登录密码">
-                <p class="form-hint">用于登录 SMTP 服务器的密码</p>
-              </div>
-              
-              <div class="form-group">
-                <label for="smtp-from">发件人邮箱</label>
-                <input type="email" id="smtp-from" placeholder="例如：noreply@example.com">
-                <p class="form-hint">邮件通知的发件人地址</p>
-              </div>
-              
-              <div class="form-group" style="margin-top: 24px;">
-                <button type="button" class="btn-secondary" onclick="app.testEmail()" id="test-email-btn">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-right: 6px; vertical-align: middle;">
-                    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
-                    <polyline points="22,6 12,13 2,6"/>
-                  </svg>
-                  测试邮件发送
-                </button>
-                <p class="form-hint">点击此按钮将发送一封测试邮件到管理员邮箱</p>
-              </div>
-            </div>
-            
-            <!-- Webhook 配置 -->
-            <div class="settings-section" id="settings-section-webhook" style="display: none;">
-              <div class="form-group">
-                <label for="webhook-url">Webhook URL</label>
-                <input type="url" id="webhook-url" placeholder="例如：https://example.com/webhook">
-                <p class="form-hint">接收通知的 Webhook 地址</p>
-              </div>
-              
-              <div class="form-group">
-                <label for="webhook-method">请求方法</label>
-                <select id="webhook-method">
-                  <option value="POST" selected>POST</option>
-                  <option value="GET">GET</option>
-                  <option value="PUT">PUT</option>
-                  <option value="PATCH">PATCH</option>
-                </select>
-                <p class="form-hint">HTTP 请求方法</p>
-              </div>
-              
-              <div class="form-group">
-                <label for="webhook-headers">请求头（JSON 格式）</label>
-                <textarea id="webhook-headers" rows="4" placeholder='{"Authorization": "Bearer token", "X-Custom-Header": "value"}'></textarea>
-                <p class="form-hint">可选的 HTTP 请求头，JSON 格式（例如：{"Authorization": "Bearer token"}）</p>
-              </div>
-              
-              <div class="form-group" style="margin-top: 24px;">
-                <button type="button" class="btn-secondary" onclick="app.testWebhook()" id="test-webhook-btn">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-right: 6px; vertical-align: middle;">
-                    <path d="M5 12h14M12 5l7 7-7 7"/>
-                  </svg>
-                  测试 Webhook
-                </button>
-                <p class="form-hint">点击此按钮将发送一个测试 Webhook 请求</p>
-              </div>
-            </div>
 
-            <!-- 飞书配置 -->
-            <div class="settings-section" id="settings-section-feishu" style="display: none;">
-              <div class="form-group">
-                <label for="feishu-webhook-url">飞书 Webhook URL</label>
-                <input type="url" id="feishu-webhook-url" placeholder="例如：https://open.feishu.cn/open-apis/bot/v2/hook/xxx">
-                <p class="form-hint">飞书群自定义机器人的 Webhook 地址</p>
-              </div>
-
-              <div class="form-group">
-                <label for="feishu-secret">签名密钥（可选）</label>
-                <input type="password" id="feishu-secret" placeholder="机器人安全设置中的签名密钥">
-                <p class="form-hint">如果飞书机器人启用了“签名校验”，请填写此密钥；留空则不修改已保存密钥</p>
-              </div>
-
-              <div class="form-group" style="margin-top: 24px;">
-                <button type="button" class="btn-secondary" onclick="app.testFeishu()" id="test-feishu-btn">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-right: 6px; vertical-align: middle;">
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                  </svg>
-                  测试飞书
-                </button>
-                <p class="form-hint">点击此按钮将发送一条测试消息到飞书群</p>
-              </div>
-            </div>
-            
-            <!-- 危险操作 -->
-            <div class="settings-section" id="settings-section-danger" style="display: none;">
-              <div class="form-group">
-                <label>日志表大小</label>
-                <p class="form-hint" id="log-table-size-text">加载中...</p>
-              </div>
-              <div class="form-group">
-                <label for="delete-all-history-confirm">删除所有检测历史</label>
-                <p class="form-hint">此操作将永久删除所有监控服务的检测历史记录，且无法恢复。请输入 "DELETE" 以确认。</p>
-                <p class="form-hint">提示：清空历史记录后，数据库占用空间可能不会立即变小（InnoDB 通常仅标记空间可复用；是否能立刻回收取决于表空间配置与数据库实现）。</p>
-              </div>
-              <div class="danger-action-wrapper">
-                <div class="danger-input-wrapper">
-                  <input type="text" id="delete-all-history-confirm" placeholder="输入 DELETE 以确认" autocomplete="off">
-                </div>
-                <button type="button" class="btn-danger" onclick="app.deleteAllHistory()" id="delete-all-history-btn" disabled>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                    <polyline points="3 6 5 6 21 6"/>
-                    <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-                  </svg>
-                  删除所有历史
-                </button>
-              </div>
-            </div>
-            
-            <div class="modal-footer" id="settings-modal-footer">
-              <button type="button" class="btn-warning" onclick="app.clearCurrentSettingsConfig()" id="settings-clear-btn" style="display: none;">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" style="margin-right: 6px; vertical-align: middle;">
-                  <polyline points="3 6 5 6 21 6"/>
-                  <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-                </svg>
-                清空配置
-              </button>
-              <button type="submit" class="btn-primary" id="settings-save-btn">保存</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </div>
-  </div>
-  
   <!-- Toast 通知 -->
-  <div class="toast-container" id="toast-container"></div>
-  
-  <script src="assets/third/chart.js"></script>
-  <script src="assets/utils.js"></script>
-  <script src="assets/app.js"></script>
+  <div class="toast-container" id="toast-container" role="status" aria-live="polite"></div>
+
+  <script src="/assets/third/chart.js"></script>
+  <script src="/assets/communications.js"></script>
+  <script src="/assets/version.js"></script>
+  <script src="/assets/app.js"></script>
 </body>
 </html>

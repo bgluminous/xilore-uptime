@@ -1,5 +1,17 @@
 stages:
   - build
+  - publish
+
+variables:
+  FF_ENABLE_JOB_CLEANUP: "true"
+  RELEASE_PROJECT_CODE: xilore-uptime
+  GITHUB_REGISTRY_REPOSITORY: bgluminous/open-source-registry
+  GITHUB_REGISTRY_BRANCH: main
+  GITHUB_ALLOW_EXTERNAL_URL: "true"
+
+default:
+  after_script:
+    - sh scripts/version-publish/clean-ci-workspace.sh
 
 build:
   stage: build
@@ -7,16 +19,34 @@ build:
     - alma
     - build
     - local
-  only:
-    - /^release-.*$/
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^release-[0-9]+\.[0-9]+\.[0-9]+$/'
   retry: 2
   script:
-    - PROJECT_NAME=$(awk -F'"' '/"name"/{print $4}' package.json)
-    - VERSION=$(awk -F'"' '/"version"/{print $4}' package.json)
-    - docker buildx build -t $BASE_REPO_URL/$PROJECT_NAME:$VERSION .
-    - docker push $BASE_REPO_URL/$PROJECT_NAME:$VERSION
-    - docker tag $BASE_REPO_URL/$PROJECT_NAME:$VERSION bgluminous/$PROJECT_NAME:$VERSION
-    - docker push bgluminous/$PROJECT_NAME:$VERSION
-    - echo "清理已推送的镜像"
-    - docker rmi $BASE_REPO_URL/$PROJECT_NAME:$VERSION
-    - docker rmi bgluminous/$PROJECT_NAME:$VERSION
+    - PROJECT_NAME=$(sh scripts/version-publish/json-tool.sh get package.json name)
+    - VERSION=$(sh ci/read-version.sh)
+    - test -n "$PROJECT_NAME" && test -n "$VERSION" && test -n "$BASE_REPO_URL"
+    - test "$CI_COMMIT_BRANCH" = "release-$VERSION"
+    - sh scripts/version-publish/check-version.sh --branch "$CI_COMMIT_BRANCH"
+    - docker buildx build -t "$BASE_REPO_URL/$PROJECT_NAME:$VERSION" .
+    - docker push "$BASE_REPO_URL/$PROJECT_NAME:$VERSION"
+    - docker tag "$BASE_REPO_URL/$PROJECT_NAME:$VERSION" "bgluminous/$PROJECT_NAME:$VERSION"
+    - docker push "bgluminous/$PROJECT_NAME:$VERSION"
+    - sh ci/prepare-docker-release.sh "$BASE_REPO_URL/$PROJECT_NAME:$VERSION" docker-linux
+    - sh ci/prepare-docker-release.sh "bgluminous/$PROJECT_NAME:$VERSION" dockerhub-linux
+    - docker rmi "$BASE_REPO_URL/$PROJECT_NAME:$VERSION" "bgluminous/$PROJECT_NAME:$VERSION"
+    - docker builder prune -f
+  artifacts:
+    paths: [release-out/]
+    expire_in: 1 day
+    public: false
+
+publish:
+  stage: publish
+  tags: [alma, build, local]
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^release-[0-9]+\.[0-9]+\.[0-9]+$/'
+  needs: [build]
+  # GITHUB_REGISTRY_TOKEN is a masked/protected CI variable, scoped to index Contents write.
+  script:
+    - sh ci/publish-release.sh

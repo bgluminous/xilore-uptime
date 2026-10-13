@@ -4,6 +4,7 @@ package-lock.json
 
 # 构建产物
 dist/
+release-out/
 
 # 日志
 logs/
@@ -54,3 +55,6 @@ Desktop.ini
 *.sql.gz
 backup/
 backups/
+
+# 独立克隆的编码规则（不入库）
+coding-rule/

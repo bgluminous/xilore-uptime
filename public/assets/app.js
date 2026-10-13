@@ -167,46 +167,7 @@ function createChart(context, config) {
 }
 
 // ============ 主题切换 ============
-const theme = {
-  init() {
-    // 从 localStorage 读取主题，默认跟随系统
-    const saved = localStorage.getItem('theme');
-    if (saved) {
-      this.set(saved);
-    } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      this.set('dark');
-    }
-
-    // 监听系统主题变化
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-      if (!localStorage.getItem('theme')) {
-        this.set(e.matches ? 'dark' : 'light');
-      }
-    });
-  },
-
-  set(mode) {
-    if (mode === 'dark') {
-      document.documentElement.setAttribute('data-theme', 'dark');
-    } else {
-      document.documentElement.removeAttribute('data-theme');
-    }
-  },
-
-  toggle() {
-    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    const newTheme = isDark ? 'light' : 'dark';
-    this.set(newTheme);
-    localStorage.setItem('theme', newTheme);
-  },
-
-  get current() {
-    return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
-  }
-};
-
-// 页面加载时初始化主题
-theme.init();
+const theme = ui.theme;
 
 // ============ 安装向导 ============
 const setup = {
@@ -215,8 +176,9 @@ const setup = {
   dbHasAdmin: false,
 
   async init() {
-    const response = await fetch('/api/install/status');
-    const {installed} = await response.json();
+    const status = await ui.runtime.load();
+    if (!status) { auth.showLogin(); return; }
+    const {installed} = status;
 
     if (!installed) {
       this.show();
@@ -262,6 +224,7 @@ const setup = {
   },
 
   async testDatabase() {
+    if (!ui.runtime.guardWrite()) return;
     const config = {
       host: input('db-host').value,
       port: parseInt(input('db-port').value),
@@ -273,12 +236,8 @@ const setup = {
     const resultEl = document.getElementById('db-test-result');
     const nextBtn = document.getElementById('btn-step1-next');
 
-    resultEl.className = 'test-result';
+    resultEl.className = 'test-result testing';
     resultEl.textContent = '正在测试连接...';
-    resultEl.style.display = 'block';
-    resultEl.style.background = '#f0f9ff';
-    resultEl.style.color = 'var(--accent)';
-    resultEl.style.border = '1px solid #bae6fd';
 
     try {
       const response = await fetch('/api/install/test-db', {
@@ -366,6 +325,7 @@ const setup = {
 
   // 使用已有管理员完成安装
   async completeSetupWithExistingAdmin() {
+    if (!ui.runtime.guardWrite()) return;
     try {
       const response = await fetch('/api/install/complete', {
         method: 'POST',
@@ -390,6 +350,7 @@ const setup = {
   },
 
   async completeSetup() {
+    if (!ui.runtime.guardWrite()) return;
     const password = input('admin-password').value;
     const passwordConfirm = input('admin-password-confirm').value;
 
@@ -449,6 +410,15 @@ const auth = {
   },
 
   showLogin() {
+    clearInterval(app.refreshInterval);
+    app.closeDetailModal();
+    app.resetSettings();
+    if (typeof communications !== 'undefined') communications.reset();
+    versions.reset();
+    const sidebarVersion = document.getElementById('sidebar-version');
+    if (sidebarVersion) sidebarVersion.hidden = true;
+    ui.toggleSidebar(false);
+    document.querySelectorAll('.modal-overlay.active').forEach(overlay => overlay.classList.remove('active'));
     const setupWizard = document.getElementById('setup-wizard');
     const loginPage = document.getElementById('login-page');
     const mainApp = document.getElementById('main-app');
@@ -540,7 +510,31 @@ const app = {
   detailChart: null,
   // 记录每个监控的状态条签名，避免无变化重绘导致闪烁
   statusBarSignatures: new Map(),
+  statusBarsState: 'loading',
+  statusBarRequestId: 0,
   currentSettingsSection: 'general',
+  hasLoadedSettings: false,
+  /** @type {AbortController | null} */
+  settingsLoadController: null,
+  searchQuery: '',
+  statusFilter: 'all',
+  groupFilter: 'all',
+  collapsedGroups: new Set(),
+  eventsBound: false,
+  animateNextList: true,
+  hasLoadedMonitors: false,
+  detailHistory: [],
+  detailLoaded: false,
+  detailDisplayedRange: null,
+  detailFailedRange: null,
+  detailHistorySignature: null,
+  /** @type {AbortController | null} */
+  detailRequestController: null,
+  currentView: 'overview',
+  viewScroll: {overview: 0, groups: 0, settings: 0, announcements: 0, maintenances: 0},
+  hasLoadedGroups: false,
+  groupLoadError: false,
+  savingGroupOrder: false,
 
   buildMonitorOpenUrl(m) {
     const rawTarget = (m?.target || '').trim();
@@ -595,8 +589,6 @@ const app = {
     // 按钮和表单图标
     setIcon('btn-icon-add', icons.add);
     setIcon('modal-icon-title', icons.add);
-    setIcon('modal-icon-group', icons.folder);
-    setIcon('modal-icon-settings', icons.settings);
     setIcon('form-icon-type', icons.type);
     setIcon('form-icon-target', icons.target);
     setIcon('form-icon-interval', icons.interval);
@@ -605,8 +597,12 @@ const app = {
   },
 
   async init() {
+    await ui.runtime.load();
     this.initIcons();
+    if (typeof communications !== 'undefined') communications.init();
     this.bindEvents();
+    this.showWorkspaceView(['#groups', '#settings', '#announcements', '#maintenances'].includes(location.hash) ? location.hash.slice(1) : 'overview');
+    versions.load();
     await this.loadGroups();
     await this.loadMonitors();
     await this.loadStats();
@@ -616,22 +612,65 @@ const app = {
   },
 
   bindEvents() {
+    if (this.eventsBound) return;
+    this.eventsBound = true;
+    byId('main-app').querySelector('.skip-link').addEventListener('click', event => {
+      // 保留当前页面地址，避免无障碍正文跳转覆盖工作区的路由锚点。
+      event.preventDefault();
+      byId('main-content').focus();
+    });
+    document.querySelectorAll('[data-workspace-link]').forEach(link => link.addEventListener('click', event => {
+      const mouseEvent = /** @type {MouseEvent} */ (event);
+      if (mouseEvent.ctrlKey || mouseEvent.metaKey || mouseEvent.shiftKey || mouseEvent.altKey || mouseEvent.button !== 0) return;
+      event.preventDefault();
+      this.showWorkspaceView(link.getAttribute('data-workspace-link'), {updateHistory: true, focus: true});
+    }));
+    window.addEventListener('hashchange', () => {
+      // 跳转到正文的锚点不改变当前工作区；页面导航支持浏览器前进和后退。
+      if (['', '#overview', '#groups', '#settings', '#announcements', '#maintenances'].includes(location.hash)) {
+        this.showWorkspaceView(location.hash.slice(1) || 'overview', {focus: true});
+      }
+    });
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        this.closeModal();
-        this.closeDetailModal();
-        this.closeSettingsModal();
+        const top = ui.dialogOrder[ui.dialogOrder.length - 1];
+        const close = {'monitor-modal': 'closeModal', 'detail-modal': 'closeDetailModal'};
+        if (top && close[top.id]) this[close[top.id]]();
       }
+      const target = eventElement(e);
+      if (e.key === '/' && this.currentView === 'overview' && !e.ctrlKey && !e.metaKey && !e.altKey && !ui.dialogOrder.length && target && !target.closest('input, textarea, select, [contenteditable="true"]') && auth.user) {
+        e.preventDefault();
+        input('monitor-search').focus();
+      }
+    });
+
+    document.getElementById('monitor-search').addEventListener('input', () => {
+      this.searchQuery = input('monitor-search').value.trim().toLowerCase();
+      this.animateNextList = true;
+      this.renderList();
+    });
+    document.getElementById('group-filter').addEventListener('change', () => {
+      this.groupFilter = input('group-filter').value;
+      this.animateNextList = true;
+      this.renderList();
+    });
+    document.querySelectorAll('[data-filter]').forEach(button => button.addEventListener('click', () => {
+      this.statusFilter = button.getAttribute('data-filter');
+      this.animateNextList = true;
+      this.renderList();
+    }));
+    document.getElementById('monitor-list').addEventListener('keydown', (event) => {
+      const target = eventElement(event);
+      if (target && target.matches('.monitor-item') && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        this.showDetail(Number(target.getAttribute('data-id')));
+      }
+    });
+    document.addEventListener('themechange', () => {
+      if (this.detailChart) this.renderDetailChart(this.detailHistory, {range: this.detailDisplayedRange});
     });
 
     // 监控弹窗点击外部不关闭（避免误操作丢失数据）
-
-    document.getElementById('group-modal').addEventListener('click', (e) => {
-      const target = eventElement(e);
-      if (target && hasClass(target, 'modal-overlay')) {
-        this.closeGroupModal();
-      }
-    });
 
     document.getElementById('detail-modal').addEventListener('click', (e) => {
       const target = eventElement(e);
@@ -651,23 +690,23 @@ const app = {
       }
     });
 
-    document.getElementById('settings-modal').addEventListener('click', (e) => {
-      const target = eventElement(e);
-      if (target && hasClass(target, 'modal-overlay')) {
-        this.closeSettingsModal();
-      }
+    input('delete-all-history-confirm').addEventListener('input', () => {
+      byId('delete-all-history-btn').disabled = !ui.runtime.canWrite() || input('delete-all-history-confirm').value.trim() !== 'DELETE';
     });
-    {
-    }
+    // 保存包含全部设置；先展示无效字段所在分类，让浏览器能聚焦并说明原因。
+    form('settings-form').addEventListener('invalid', event => {
+      const target = eventElement(event);
+      const section = target && target.closest('.settings-section');
+      if (section && target === form('settings-form').querySelector(':invalid')) {
+        this.switchSettingsSection(section.id.replace('settings-section-', ''));
+      }
+    }, true);
     document.querySelectorAll('.time-tab').forEach(tab => {
       tab.addEventListener('click', () => {
-        document.querySelectorAll('.time-tab').forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        this.currentTimeRange = tab.getAttribute('data-range');
-        if (this.currentDetailId) {
-          this.loadDetailData(this.currentDetailId).then(_r => {
-          });
-        }
+        const range = tab.getAttribute('data-range');
+        if (!this.currentDetailId || range === this.currentTimeRange) return;
+        this.currentTimeRange = range;
+        this.loadDetailData(this.currentDetailId);
       });
     });
 
@@ -698,6 +737,36 @@ const app = {
     });
   },
 
+  showWorkspaceView(view, {updateHistory = false, focus = false} = {}) {
+    if (!['overview', 'groups', 'settings', 'announcements', 'maintenances'].includes(view)) return;
+    const changed = this.currentView !== view;
+    if (changed) this.viewScroll[this.currentView] = window.scrollY;
+    this.currentView = view;
+    if (updateHistory && location.hash !== `#${view}`) history.pushState(null, '', `#${view}`);
+
+    document.querySelectorAll('[data-workspace-view]').forEach(panel => {
+      if (panel instanceof HTMLElement) panel.hidden = panel.getAttribute('data-workspace-view') !== view;
+    });
+    document.querySelectorAll('[data-workspace-link]').forEach(link => {
+      const active = link.getAttribute('data-workspace-link') === view;
+      link.classList.toggle('active', active);
+      if (active) link.setAttribute('aria-current', 'page');
+      else link.removeAttribute('aria-current');
+    });
+    const title = {overview: '监控概览', groups: '分组管理', settings: '系统设置', announcements: '公告管理', maintenances: '维护管理'}[view];
+    byId('workspace-breadcrumb').textContent = title;
+    document.title = `${title} - Xilore Uptime`;
+    byId('workspace-footer-note').textContent = {announcements: '草稿仅管理员可见，发布后在公开页展示', maintenances: '维护独立于暂停，重叠时段分别合并限制', overview: '状态条展示最近 24 小时的检测记录', groups: '分组顺序同步用于监控列表与公开状态页', settings: this.currentSettingsSection === 'about' ? '版本信息来自当前实例与 GitHub 索引' : '更改设置后，点击保存使其生效'}[view];
+    if (view === 'groups' && changed) this.renderGroupList();
+    if (view === 'settings') this.loadSettings();
+    if (typeof communications !== 'undefined' && ['announcements', 'maintenances'].includes(view)) communications.load(view);
+    ui.toggleSidebar(false);
+    if (focus) {
+      byId(`${view}-heading`).focus({preventScroll: true});
+      if (changed) window.scrollTo({top: this.viewScroll[view], behavior: 'instant'});
+    }
+  },
+
   async loadGroups() {
     try {
       const response = await fetch('/api/groups', {credentials: 'same-origin'});
@@ -710,13 +779,17 @@ const app = {
         await this.normalizeGroupOrder();
         this.sortGroups();
         this.updateGroupSelect();
+        this.hasLoadedGroups = true;
+        this.groupLoadError = false;
       } else {
         console.warn('加载分组失败，状态码:', response.status);
-        this.groups = [];
+        this.groupLoadError = true;
       }
     } catch (error) {
       console.error('加载分组失败:', error);
-      this.groups = [];
+      this.groupLoadError = true;
+    } finally {
+      if (this.currentView === 'groups') this.renderGroupList();
     }
   },
 
@@ -730,6 +803,7 @@ const app = {
   },
 
   async normalizeGroupOrder() {
+    if (!ui.runtime.canWrite()) return;
     const orders = this.groups.map(g => g.sort_order ?? 0);
     const hasMissingOrZero = orders.some(v => v <= 0);
     const uniqueCount = new Set(orders).size;
@@ -766,6 +840,11 @@ const app = {
     this.sortGroups();
     select.innerHTML = '<option value="">未分组</option>' +
       this.groups.map(g => `<option value="${g.id}">${this.escapeHtml(g.name)}</option>`).join('');
+    const filter = input('group-filter');
+    filter.innerHTML = '<option value="all">所有分组</option><option value="0">未分组</option>' +
+      this.groups.map(g => `<option value="${g.id}">${this.escapeHtml(g.name)}</option>`).join('');
+    if (this.groupFilter !== 'all' && this.groupFilter !== '0' && !this.groups.some(group => String(group.id) === this.groupFilter)) this.groupFilter = 'all';
+    filter.value = this.groupFilter;
   },
 
   async loadMonitors() {
@@ -780,6 +859,7 @@ const app = {
         const msg = errorData.error || '加载失败';
         console.error('加载监控列表失败:', msg);
         this.showToast('加载监控列表失败: ' + msg, 'error');
+        this.showLoadError();
         return;
       }
       const data = await response.json();
@@ -790,7 +870,11 @@ const app = {
         ...m,
         statusBar24h: prevStatusBars.get(String(m.id)) || null
       }));
+      this.hasLoadedMonitors = true;
+      ui.updateHealth(this.monitors);
+      ui.connection(true);
       this.renderList();
+      this.updateGroupSummary();
 
       // 如果详情弹窗是打开的，更新详情弹窗的基础信息
       if (this.currentDetailId) {
@@ -799,7 +883,33 @@ const app = {
     } catch (error) {
       console.error('加载监控列表失败:', error);
       this.showToast('加载监控列表失败: ' + (error.message || '未知错误'), 'error');
+      this.showLoadError();
     }
+  },
+
+  showLoadError() {
+    ui.connection(false);
+    if (!this.hasLoadedMonitors) {
+      document.getElementById('monitor-list').innerHTML = `<div class="empty-state">${ui.icon('alert')}<h3>暂时无法连接服务</h3><p>请检查网络连接后重试。</p><button class="btn-secondary" onclick="app.init()">重新加载</button></div>`;
+      document.getElementById('health-title').textContent = '暂时无法获取服务状态';
+      document.getElementById('health-description').textContent = '等待连接恢复后继续更新。';
+    }
+  },
+
+  clearFilters() {
+    this.searchQuery = '';
+    this.statusFilter = 'all';
+    this.groupFilter = 'all';
+    input('monitor-search').value = '';
+    input('group-filter').value = 'all';
+    this.animateNextList = true;
+    this.renderList();
+  },
+
+  monitorState(monitor) {
+    if (monitor.enabled === 0 || monitor.enabled === false) return 'paused';
+    if (monitor.maintenance?.active) return 'maintenance';
+    return ['up', 'down', 'warning'].includes(monitor.status) ? monitor.status : 'unknown';
   },
 
   computeStatusBarSignature(statusBar24h) {
@@ -836,39 +946,47 @@ const app = {
   },
 
   async loadStatusBars() {
+    const requestId = ++this.statusBarRequestId;
     try {
       const statusBarsRes = await fetch('/api/monitors/statusbars', {credentials: 'same-origin'});
       if (statusBarsRes.status === 401) {
         auth.showLogin();
         return;
       }
-      if (statusBarsRes.ok) {
-        const statusBars = await statusBarsRes.json();
-        // 更新监控数据中的状态条信息
-        const statusBarMap = new Map(statusBars.map(sb => [String(sb.monitorId), sb.statusBar24h]));
+      if (!statusBarsRes.ok) throw new Error('暂时无法获取状态记录');
+      const statusBars = await statusBarsRes.json();
+      if (requestId !== this.statusBarRequestId) return;
+      // 更新监控数据中的状态条信息
+      const statusBarMap = new Map(statusBars.map(sb => [String(sb.monitorId), sb.statusBar24h]));
 
-        // 只更新状态条（不整页重渲染），并且无变化不重绘，避免“闪一下”
-        this.monitors = this.monitors.map(m => {
-          const key = String(m.id);
-          if (!statusBarMap.has(key)) return m;
+      // 只更新状态条（不整页重渲染），并且无变化不重绘，避免“闪一下”
+      this.monitors = this.monitors.map(m => {
+        const key = String(m.id);
+        if (!statusBarMap.has(key)) return m;
 
-          const sb = statusBarMap.get(key) || null;
-          const sig = this.computeStatusBarSignature(sb);
-          const prevSig = this.statusBarSignatures.get(key);
-          if (sig !== prevSig) {
-            this.statusBarSignatures.set(key, sig);
-            this.updateMonitorStatusBarDom(m.id, sb);
-          }
+        const sb = statusBarMap.get(key) || null;
+        const sig = this.computeStatusBarSignature(sb);
+        const prevSig = this.statusBarSignatures.get(key);
+        if (sig !== prevSig) {
+          this.statusBarSignatures.set(key, sig);
+          this.updateMonitorStatusBarDom(m.id, sb);
+        }
 
-          return {...m, statusBar24h: sb};
-        });
-      }
+        return {...m, statusBar24h: sb};
+      });
+      this.statusBarsState = 'ready';
     } catch (error) {
+      if (requestId !== this.statusBarRequestId) return;
+      this.statusBarsState = 'error';
       console.error('加载状态条数据失败:', error);
+    } finally {
+      if (requestId === this.statusBarRequestId) {
+        ui.groupHistory.update(document.getElementById('monitor-list'), this.monitors, this.statusBarsState);
+      }
     }
   },
 
-  updateDetailInfo() {
+  updateDetailInfo({refreshHistory = true} = {}) {
     if (!this.currentDetailId) return;
 
     const monitor = this.monitors.find(m => m.id === this.currentDetailId);
@@ -881,10 +999,12 @@ const app = {
     // 更新基础信息
     document.getElementById('detail-title').textContent = monitor.name;
     document.getElementById('detail-target').textContent = monitor.target + (monitor.port ? ':' + monitor.port : '');
-    document.getElementById('detail-status').className = 'detail-status ' + monitor.status;
+    document.getElementById('detail-status').className = 'detail-status ' + (monitor.effective_status || monitor.status);
+    document.getElementById('detail-status').setAttribute('aria-hidden', 'true');
+    document.getElementById('detail-state-label').textContent = ui.statusLabel(monitor);
 
     document.getElementById('detail-type').textContent = monitor.type.toUpperCase();
-    document.getElementById('detail-response-time').textContent = monitor.last_response_time ? monitor.last_response_time + ' ms' : '-';
+    document.getElementById('detail-response-time').textContent = monitor.last_response_time != null ? monitor.last_response_time + ' ms' : '-';
     document.getElementById('detail-interval').textContent = monitor.interval_seconds + ' 秒';
     document.getElementById('detail-timeout').textContent = (monitor.timeout_seconds || 10) + ' 秒';
     document.getElementById('detail-retries').textContent = monitor.retries || 0;
@@ -904,8 +1024,7 @@ const app = {
     }
 
     // 刷新历史数据
-    this.loadDetailData(this.currentDetailId).then(_r => {
-    });
+    if (refreshHistory) this.loadDetailData(this.currentDetailId, {background: true});
   },
 
   async loadStats() {
@@ -914,15 +1033,15 @@ const app = {
       if (response.status === 401) return;
       const stats = await response.json();
 
-      document.getElementById('stat-total').textContent = stats.total;
-      document.getElementById('stat-up').textContent = stats.up;
-      document.getElementById('stat-down').textContent = stats.down;
+      ui.setValue(document.getElementById('stat-total'), stats.total);
+      ui.setValue(document.getElementById('stat-up'), stats.up);
+      ui.setValue(document.getElementById('stat-down'), stats.down);
       const pausedEl = document.getElementById('stat-paused');
-      if (pausedEl) pausedEl.textContent = stats.paused ?? 0;
-      document.getElementById('stat-uptime').textContent =
+      ui.setValue(pausedEl, stats.paused ?? 0);
+      ui.setValue(document.getElementById('stat-uptime'),
         stats.avgUptime24h !== null && stats.avgUptime24h !== undefined
           ? stats.avgUptime24h.toFixed(2) + '%'
-          : '-';
+          : '—');
     } catch (error) {
       console.error('加载统计失败:', error);
     }
@@ -935,13 +1054,36 @@ const app = {
         return;
       }
 
+      const scopedMonitors = this.monitors.filter(monitor => {
+        const matchesSearch = `${monitor.name || ''} ${monitor.target || ''}`.toLowerCase().includes(this.searchQuery);
+        const matchesGroup = this.groupFilter === 'all' || String(monitor.group_id || 0) === this.groupFilter;
+        return matchesSearch && matchesGroup;
+      });
+      const filteredMonitors = scopedMonitors.filter(monitor => this.statusFilter === 'all' || this.monitorState(monitor) === this.statusFilter);
+      document.getElementById('nav-monitor-count').textContent = String(this.monitors.length);
+      document.getElementById('monitor-result-count').textContent = String(filteredMonitors.length);
+      document.querySelectorAll('[data-filter]').forEach(button => {
+        const state = button.getAttribute('data-filter');
+        const active = state === this.statusFilter;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+        button.querySelector('[data-filter-count]').textContent = String(state === 'all' ? scopedMonitors.length : scopedMonitors.filter(monitor => this.monitorState(monitor) === state).length);
+      });
+      const hasFilters = Boolean(this.searchQuery) || this.statusFilter !== 'all' || this.groupFilter !== 'all';
+
       if (this.monitors.length === 0) {
         container.innerHTML = `
           <div class="empty-state">
-            <h3>${icons.empty} 还没有监控项目</h3>
-            <p>点击"${icons.add} 添加监控"按钮创建你的第一个监控</p>
+            ${ui.icon('activity')}<h3>从第一次心跳开始</h3>
+            <p>添加你的第一个监控，让服务的每一刻在线都清晰可见。</p>
+            <button class="btn-primary" onclick="app.showAddModal()">${icons.add} 添加监控</button>
           </div>
         `;
+        return;
+      }
+
+      if (filteredMonitors.length === 0 && hasFilters) {
+        container.innerHTML = `<div class="empty-state">${ui.icon('search')}<h3>没有找到匹配的监控</h3><p>试试其他关键词，或调整状态与分组筛选。</p><button class="btn-secondary" onclick="app.clearFilters()">清除筛选</button></div>`;
         return;
       }
 
@@ -949,8 +1091,8 @@ const app = {
       const grouped = {};
       const ungrouped = [];
 
-      this.monitors.forEach(m => {
-        if (m.group_id) {
+      filteredMonitors.forEach(m => {
+        if (m.group_id && this.groups.some(group => String(group.id) === String(m.group_id))) {
           if (!grouped[m.group_id]) grouped[m.group_id] = [];
           grouped[m.group_id].push(m);
         } else {
@@ -970,7 +1112,7 @@ const app = {
           // 按名称排序：英文字母在中文前面
           return sortByName(a.name || '', b.name || '');
         });
-        html += this.renderGroupSection(group, monitors);
+        if (!hasFilters || monitors.length > 0) html += this.renderGroupSection(group, monitors);
       });
 
       // 渲染未分组（如果有未分组的监控，或者没有任何监控时显示）
@@ -982,12 +1124,27 @@ const app = {
         html += this.renderGroupSection({id: 0, name: '未分组'}, sortedUngrouped);
       }
 
-      container.innerHTML = html;
+      // 数据轮询保留折叠状态和键盘焦点，只在首次展示或筛选后播放入场动画。
+      const focused = document.activeElement;
+      const focusedCard = focused instanceof Element ? focused.closest('.monitor-item') : null;
+      const focusedGroup = focused instanceof Element ? focused.closest('.group-header') : null;
+      const focusSelector = focusedCard
+        ? `.monitor-item[data-id="${focusedCard.getAttribute('data-id')}"]${focused === focusedCard ? '' : focused.matches('button[data-action]') ? ` button[data-action="${focused.getAttribute('data-action')}"]` : ' .monitor-target-link'}`
+        : focusedGroup ? `.group-section[data-group-id="${focusedGroup.parentElement.getAttribute('data-group-id')}"] .group-header` : null;
+      if (container.innerHTML !== html) {
+        container.innerHTML = html;
+        if (focusSelector) {
+          const nextFocus = container.querySelector(focusSelector);
+          if (nextFocus instanceof HTMLElement) nextFocus.focus({preventScroll: true});
+        }
+      }
+      if (this.animateNextList) ui.enter(container);
+      this.animateNextList = false;
     } catch (error) {
       console.error('渲染列表失败:', error);
       const container = document.getElementById('monitor-list');
       if (container) {
-        container.innerHTML = `<div class="empty-state"><h3>渲染列表时出错: ${error.message}</h3></div>`;
+        container.innerHTML = `<div class="empty-state"><h3>渲染列表时出错: ${this.escapeHtml(error.message)}</h3></div>`;
       }
       throw error;
     }
@@ -1000,12 +1157,18 @@ const app = {
     const active = monitors.filter(m => m.enabled !== 0 && m.enabled !== false);
     if (active.length === 0) return 'empty'; // 全部暂停时按空分组显示
 
+    if (active.some(m => m.maintenance?.active)) {
+      const outside = active.filter(m => !m.maintenance?.active);
+      if (outside.some(m => m.status === 'down')) return 'critical';
+      if (outside.some(m => m.status === 'warning')) return 'warning';
+      return 'maintenance';
+    }
     const upCount = active.filter(m => m.status === 'up').length;
     const totalCount = active.length;
 
     if (upCount === totalCount) {
       return 'healthy'; // 全部正常 - 绿色
-    } else if (upCount === 0) {
+    } else if (active.every(monitor => monitor.status === 'down')) {
       return 'critical'; // 全部有问题 - 红色
     } else {
       return 'warning'; // 部分有问题 - 黄色
@@ -1016,22 +1179,28 @@ const app = {
   renderGroupSection(group, monitors) {
     const status = this.getGroupStatus(monitors);
     const isEmpty = monitors.length === 0;
+    const collapsed = this.collapsedGroups.has(String(group.id));
+    const statusText = {maintenance: '维护中', healthy: '运行正常', critical: '服务离线', warning: '需要关注', empty: '暂无检测'}[status];
 
     return `
-      <div class="group-section ${status}" data-group-id="${group.id}">
-        <div class="group-header" onclick="app.toggleGroup(${group.id})">
+      <div class="group-section ${status}${collapsed ? ' collapsed' : ''}" data-group-id="${group.id}">
+        <button class="group-header" type="button" onclick="app.toggleGroup(${group.id})" aria-expanded="${!collapsed}" aria-controls="group-monitors-${group.id}">
           <svg class="group-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="6 9 12 15 18 9"/>
           </svg>
-          <h3>${this.escapeHtml(group.name)}</h3>
-          <span class="group-count">${monitors.length}</span>
-        </div>
-        <div class="group-monitors">
+          <span class="group-folder">${ui.icon('folder')}</span>
+          <span class="group-title">${this.escapeHtml(group.name)}</span>
+          <span class="group-count">${monitors.length} 项</span>
+          <span class="group-health">${statusText}${monitors.some(m => m.maintenance?.active && m.enabled) ? ` · 维护 ${monitors.filter(m => m.maintenance?.active && m.enabled).length} 项` : ''}</span>
+          ${ui.groupHistory.render(monitors, this.statusBarsState)}
+          <span class="group-collapse-label" aria-hidden="true"></span>
+        </button>
+        <div class="group-body" id="group-monitors-${group.id}"${collapsed ? ' inert' : ''}><div class="group-content"><div class="group-monitors">
           ${isEmpty
       ? '<div class="empty-group-message">该分组暂无监控项目</div>'
       : monitors.map(m => this.renderMonitorItem(m)).join('')
     }
-        </div>
+        </div></div></div>
       </div>
     `;
   },
@@ -1055,12 +1224,12 @@ const app = {
         const failCount = (item.downChecks || 0) + (item.warningChecks || 0);
         const uptime = item.uptime !== null && item.uptime !== undefined
           ? item.uptime.toFixed(2) + '%'
-          : '-';
+          : '—';
         const detail = item.message ? this.escapeHtml(item.message) :
           (item.status === 'up' ? '服务正常' :
             (item.status === null ? '无检测数据' : '-'));
 
-        return `时间跨度: ${startStr} ~ ${endStr}\n可用率: ${uptime}\n失败次数 / 总检测次数: ${failCount} / ${totalChecks}\n详细信息: ${detail}`;
+        return `时间跨度: ${startStr} ~ ${endStr}\n可用率: ${uptime}\n失败次数 / 总检测次数: ${failCount} / ${totalChecks}\n详细信息: ${detail}${item.maintenanceChecks || item.segments?.includes('maintenance') ? '\n含维护时段；排除统计 ' + (item.excludedChecks || 0) + ' 次' : ''}`;
       } catch (e) {
         return '';
       }
@@ -1133,6 +1302,7 @@ const app = {
           const statusClass = subStatus === 'up' ? 'status-bar-segment-up' :
             subStatus === 'down' ? 'status-bar-segment-down' :
               subStatus === 'warning' ? 'status-bar-segment-warning' :
+              subStatus === 'maintenance' ? 'status-bar-segment-maintenance' :
                 'status-bar-segment-empty';
           subItems.push(`<div class="status-bar-segment ${statusClass}" title="${tooltip}"></div>`);
         }
@@ -1166,40 +1336,44 @@ const app = {
       : `<span class="monitor-target">${targetText}</span>`;
 
     return `
-      <div class="monitor-item ${m.status}${isPaused ? ' paused' : ''}" data-id="${m.id}">
+      <article class="monitor-item ${m.maintenance?.active && !isPaused ? 'maintenance' : m.status}${isPaused ? ' paused' : ''}" data-id="${m.id}" tabindex="0" aria-label="查看 ${this.escapeHtml(m.name).replace(/"/g, '&quot;')} 的监控详情">
         <div class="monitor-status"></div>
         <div class="monitor-info">
-          <div class="monitor-name">${this.escapeHtml(m.name)}${isPaused ? '<span class="monitor-paused-badge">已暂停</span>' : ''}</div>
+          <div class="monitor-name">${this.escapeHtml(m.name)}</div>
           <div class="monitor-meta">
             <span class="monitor-type">${m.type.toUpperCase()}</span>
             ${targetHtml}
           </div>
         </div>
+        <span class="monitor-state-label">${ui.statusLabel(m)}</span>
         <div class="monitor-stats">
-          ${m.ssl_days_remaining != null
-            ? `<div class="monitor-stat monitor-stat-ssl">
-            <span class="monitor-stat-value">${m.ssl_days_remaining > 0 ? '剩余 ' + m.ssl_days_remaining + ' 天' : m.ssl_days_remaining === 0 ? '已过期' : '已过期 ' + Math.abs(m.ssl_days_remaining) + ' 天'}</span>
-            <span class="monitor-stat-label">${icons.ssl} SSL 证书</span>
-          </div>`
-            : '<div class="monitor-stat monitor-stat-ssl-placeholder"></div>'}
           <div class="monitor-stat monitor-stat-response-time">
-            <span class="monitor-stat-value">${m.last_response_time ? m.last_response_time + 'ms' : '-'}</span>
-            <span class="monitor-stat-label">${icons.responseTime} 响应时间</span>
+            <span class="monitor-stat-value">${ui.formatResponseTime(m.last_response_time)}</span>
+            <span class="monitor-stat-label" title="最近一次检测的响应时间">最新延迟</span>
           </div>
           <div class="monitor-stat monitor-stat-uptime">
-            <span class="monitor-stat-value">${m.uptime_24h !== null && m.uptime_24h !== undefined ? m.uptime_24h.toFixed(2) + '%' : '-'}</span>
-            <span class="monitor-stat-label">${icons.uptime || ''} 24小时可用率</span>
+            <span class="monitor-stat-value">${m.uptime_24h !== null && m.uptime_24h !== undefined ? m.uptime_24h.toFixed(2) + '%' : '—'}</span>
+            <span class="monitor-stat-label">24小时可用率</span>
           </div>
-          <div class="monitor-stat monitor-stat-last-check">
-            <span class="monitor-stat-value">${m.last_check ? this.formatFullTime(m.last_check) : '-'}</span>
-            <span class="monitor-stat-label">${icons.lastCheck} 最后检测时间</span>
+          ${ui.renderResponseStats(m)}
+        </div>
+        <div class="monitor-secondary-stats">
+          <div class="monitor-secondary-stat">
+            <span class="monitor-secondary-label">${icons.ssl} SSL 证书</span>
+            <span class="monitor-secondary-value">${m.ssl_days_remaining == null ? '—' : m.ssl_days_remaining > 0 ? '剩余 ' + m.ssl_days_remaining + ' 天' : m.ssl_days_remaining === 0 ? '已过期' : '已过期 ' + Math.abs(m.ssl_days_remaining) + ' 天'}</span>
+          </div>
+          <div class="monitor-secondary-stat">
+            <span class="monitor-secondary-label">${icons.lastCheck} 最后检测</span>
+            <span class="monitor-secondary-value">${m.last_check ? this.formatFullTime(m.last_check) : '—'}</span>
           </div>
         </div>
-        <div class="monitor-actions">
-          <button type="button" class="btn-icon${isPaused ? ' paused' : ''}" data-action="toggleMonitor" data-id="${m.id}" title="${pauseTitle}">
+        ${statusBarHtml}
+        <div class="monitor-timeline-label"><span>24 小时前</span><span>现在</span></div>
+        <div class="monitor-bottom"><span class="monitor-interval">${ui.icon('clock')}${isPaused ? '检测已暂停' : `每 ${m.interval_seconds} 秒检测`}</span><div class="monitor-actions">
+          <button type="button" class="btn-icon${isPaused ? ' paused' : ''}" data-ui-write data-action="toggleMonitor" data-id="${m.id}" title="${pauseTitle}">
             ${pauseIcon}
           </button>
-          <button type="button" class="btn-icon btn-icon-refresh" data-action="checkNow" data-id="${m.id}" title="立即检测">
+          <button type="button" class="btn-icon btn-icon-refresh" data-ui-write data-action="checkNow" data-id="${m.id}" title="立即检测">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M23 4v6h-6M1 20v-6h6"/>
               <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
@@ -1217,28 +1391,32 @@ const app = {
               <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
             </svg>
           </button>
-          <button type="button" class="btn-icon danger" data-action="deleteMonitor" data-id="${m.id}" title="删除">
+          <button type="button" class="btn-icon danger" data-ui-write data-action="deleteMonitor" data-id="${m.id}" title="删除">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="3 6 5 6 21 6"/>
               <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
             </svg>
           </button>
-        </div>
-        ${statusBarHtml}
-      </div>
+        </div></div>
+      </article>
     `;
   },
 
   toggleGroup(groupId) {
     const section = document.querySelector(`.group-section[data-group-id="${groupId}"]`);
     if (section) {
-      section.classList.toggle('collapsed');
+      const collapsed = section.classList.toggle('collapsed');
+      if (collapsed) this.collapsedGroups.add(String(groupId));
+      else this.collapsedGroups.delete(String(groupId));
+      section.querySelector('.group-header').setAttribute('aria-expanded', String(!collapsed));
+      section.querySelector('.group-body').inert = collapsed;
     }
   },
 
   showAddModal() {
+    if (!ui.runtime.guardWrite()) return;
     this.editingId = null;
-    document.getElementById('modal-title').innerHTML = icons.add + ' 添加监控';
+    document.getElementById('modal-title').innerHTML = `<span class="modal-icon">${icons.add}</span> 添加监控`;
     form('monitor-form').reset();
     input('monitor-id').value = '';
     input('monitor-timeout').value = '10';
@@ -1255,18 +1433,27 @@ const app = {
   },
 
   // ============ 分组管理 ============
-  showGroupModal() {
-    this.renderGroupList();
-    document.getElementById('group-modal').classList.add('active');
-  },
-
-  closeGroupModal() {
-    document.getElementById('group-modal').classList.remove('active');
-    input('new-group-name').value = '';
+  updateGroupSummary() {
+    byId('group-page-count').textContent = this.hasLoadedGroups ? String(this.groups.length) : '—';
+    // 刷新数量和公开标记时不重建列表，保留正在编辑的名称及拖拽状态。
+    const counts = new Map();
+    this.monitors.forEach(monitor => counts.set(String(monitor.group_id), (counts.get(String(monitor.group_id)) || 0) + 1));
+    document.querySelectorAll('#group-list .group-list-item').forEach(item => {
+      const id = item.getAttribute('data-id');
+      item.querySelector('.group-monitor-count').textContent = `${counts.get(id) || 0} 个监控`;
+      item.querySelector('.group-public-badge').hidden = !this.hasPublicMonitors(Number(id));
+    });
   },
 
   renderGroupList() {
     const container = document.getElementById('group-list');
+    if (!this.hasLoadedGroups) {
+      container.innerHTML = this.groupLoadError
+        ? `<div class="empty-groups">${icons.folder}<h3>暂时无法加载分组</h3><p>请检查网络连接后重试。</p><button type="button" class="btn-secondary" onclick="app.loadGroups()">重新加载</button></div>`
+        : '<div class="loading-state"><span class="loading-spinner"></span><p>正在加载分组…</p></div>';
+      this.updateGroupSummary();
+      return;
+    }
 
     if (this.groups.length === 0) {
       container.innerHTML = `
@@ -1276,6 +1463,7 @@ const app = {
           <p>创建分组来更好地组织你的监控项目</p>
         </div>
       `;
+      this.updateGroupSummary();
       return;
     }
 
@@ -1288,8 +1476,8 @@ const app = {
     });
 
     this.sortGroups();
-    container.innerHTML = this.groups.map((g, _index) => `
-      <div class="group-list-item" data-id="${g.id}" draggable="true">
+    container.innerHTML = this.groups.map((g, index) => `
+      <div class="group-list-item" data-id="${g.id}" draggable="${ui.runtime.canWrite() && !this.savingGroupOrder}">
         <div class="group-drag-handle" title="拖拽排序">
           ${icons.drag}
         </div>
@@ -1299,13 +1487,15 @@ const app = {
         <div class="group-item-info">
           <span class="group-name" data-group-id="${g.id}">${this.escapeHtml(g.name)}</span>
           <span class="group-monitor-count">${counts[g.id] || 0} 个监控</span>
-          ${this.hasPublicMonitors(g.id) ? '<span class="group-public-badge" title="包含公开服务">公开</span>' : ''}
+          <span class="group-public-badge" title="包含公开服务"${this.hasPublicMonitors(g.id) ? '' : ' hidden'}>公开</span>
         </div>
         <div class="group-item-actions">
-          <button class="btn-icon" onclick="app.editGroupName(${g.id})" title="编辑名称">
+          <button type="button" class="btn-icon group-sort-action" data-ui-write data-group-move="up" onclick="app.moveGroup(${g.id}, -1)" title="上移分组" aria-label="上移分组"${index === 0 || this.savingGroupOrder ? ' disabled' : ''}>${icons.sortUp}</button>
+          <button type="button" class="btn-icon group-sort-action" data-ui-write data-group-move="down" onclick="app.moveGroup(${g.id}, 1)" title="下移分组" aria-label="下移分组"${index === this.groups.length - 1 || this.savingGroupOrder ? ' disabled' : ''}>${icons.sortDown}</button>
+          <button class="btn-icon" data-ui-write onclick="app.editGroupName(${g.id})" title="编辑名称">
             ${icons.edit}
           </button>
-          <button class="btn-icon danger" onclick="app.deleteGroup(${g.id})" title="删除分组">
+          <button class="btn-icon danger" data-ui-write onclick="app.deleteGroup(${g.id})" title="删除分组">
             ${icons.delete}
           </button>
         </div>
@@ -1314,9 +1504,24 @@ const app = {
 
     // 初始化拖拽功能
     this.initDragAndDrop();
+    this.updateGroupSummary();
+  },
+
+  async moveGroup(id, offset) {
+    if (!ui.runtime.guardWrite() || this.savingGroupOrder) return;
+    this.sortGroups();
+    const index = this.groups.findIndex(group => group.id === id);
+    const nextIndex = index + offset;
+    if (index < 0 || nextIndex < 0 || nextIndex >= this.groups.length) return;
+    await this.updateGroupOrderFromDOM(id, nextIndex);
+    const item = document.querySelector(`#group-list .group-list-item[data-id="${id}"]`);
+    const direction = offset < 0 ? 'up' : 'down';
+    const button = item?.querySelector(`[data-group-move="${direction}"]:not(:disabled)`) || item?.querySelector('.group-sort-action:not(:disabled)');
+    if (button instanceof HTMLElement) button.focus({preventScroll: true});
   },
 
   initDragAndDrop() {
+    if (!ui.runtime.canWrite()) return;
     const container = document.getElementById('group-list');
     if (!container) {
       console.error('找不到 group-list 容器');
@@ -1327,7 +1532,8 @@ const app = {
     let draggingGroupId = null;
 
     // 在容器上监听 drop 事件（事件委托）
-    container.addEventListener('drop', async (e) => {
+    // 反复切换页面或重绘列表时替换容器处理器，避免重复提交排序请求。
+    container.ondrop = async (e) => {
       e.preventDefault();
       e.stopPropagation();
       const target = eventElement(e);
@@ -1418,10 +1624,10 @@ const app = {
 
       // 重置拖拽ID
       draggingGroupId = null;
-    });
+    };
 
     // 在容器上监听 dragover 事件（必须调用 preventDefault 才能触发 drop）
-    container.addEventListener('dragover', (e) => {
+    container.ondragover = (e) => {
       const dragEvent = /** @type {DragEvent} */ (e);
       e.preventDefault();
       if (dragEvent.dataTransfer) {
@@ -1449,12 +1655,16 @@ const app = {
       } else {
         targetItem.insertAdjacentHTML('afterend', '<div class="drag-placeholder"></div>');
       }
-    });
+    };
 
     // 为每个列表项添加拖拽事件
     const items = container.querySelectorAll('.group-list-item');
     items.forEach(item => {
       item.addEventListener('dragstart', (e) => {
+        if (!ui.runtime.canWrite() || this.savingGroupOrder || eventElement(e)?.closest('input, button')) {
+          e.preventDefault();
+          return;
+        }
         const dragEvent = /** @type {DragEvent} */ (e);
         const groupIdText = item.getAttribute('data-id') || '';
         draggingGroupId = parseInt(groupIdText, 10);
@@ -1478,6 +1688,7 @@ const app = {
   },
 
   async updateGroupOrderFromDOM(draggedId, newDomIndex) {
+    if (!ui.runtime.guardWrite() || this.savingGroupOrder) return;
     // 先按当前顺序排序
     this.sortGroups();
 
@@ -1486,6 +1697,11 @@ const app = {
       console.error('找不到被拖拽的分组:', draggedId);
       return;
     }
+    this.savingGroupOrder = true;
+    byId('group-list').setAttribute('aria-busy', 'true');
+    document.querySelectorAll('#group-list .group-sort-action').forEach(button => {
+      if (button instanceof HTMLButtonElement) button.disabled = true;
+    });
 
     // 移除拖拽的项目
     const draggedGroup = this.groups.splice(draggedIndex, 1)[0];
@@ -1533,7 +1749,6 @@ const app = {
 
       // 重新加载分组以确保数据同步
       await this.loadGroups();
-      this.renderGroupList();
       this.updateGroupSelect();
       this.renderList();
       this.showToast('分组顺序已更新', 'success');
@@ -1542,13 +1757,17 @@ const app = {
       this.showToast(`分组排序失败: ${error.message}`, 'error');
       // 重新加载分组以恢复原状态
       await this.loadGroups();
+    } finally {
+      this.savingGroupOrder = false;
+      byId('group-list').removeAttribute('aria-busy');
       this.renderGroupList();
     }
   },
 
   async addGroup(e) {
+    if (!ui.runtime.guardWrite(e)) return;
     e.preventDefault();
-    const nameInput = document.getElementById('new-group-name');
+    const nameInput = input('new-group-name');
     const name = nameInput.value.trim();
 
     if (!name) return;
@@ -1595,6 +1814,7 @@ const app = {
   },
 
   editGroupName(id) {
+    if (!ui.runtime.guardWrite()) return;
     const group = this.groups.find(g => g.id === id);
     if (!group) return;
 
@@ -1604,13 +1824,17 @@ const app = {
     const oldName = group.name;
     const input = document.createElement('input');
     input.type = 'text';
+    input.setAttribute('aria-label', '分组名称');
     input.value = oldName;
     input.className = 'group-name-input';
-    input.style.cssText = 'width: 100%; padding: 4px 8px; border: 1px solid var(--accent); border-radius: 4px; background: var(--bg-white); color: var(--text-primary); font-size: 0.95rem; font-weight: 600;';
 
+    let finished = false;
     const saveEdit = async () => {
+      if (finished) return;
+      finished = true;
       const newName = input.value.trim();
       input.remove();
+      nameSpan.textContent = oldName;
 
       if (!newName) {
         this.showToast('分组名称不能为空', 'error');
@@ -1657,6 +1881,8 @@ const app = {
     };
 
     const cancelEdit = () => {
+      if (finished) return;
+      finished = true;
       input.remove();
       nameSpan.textContent = oldName;
     };
@@ -1679,7 +1905,8 @@ const app = {
   },
 
   async deleteGroup(id) {
-    if (!confirm('确定要删除此分组吗？分组内的监控将移至"未分组"。')) return;
+    if (!ui.runtime.guardWrite()) return;
+    if (!await ui.confirm('确定要删除此分组吗？分组内的监控将移至"未分组"。')) return;
 
     try {
       const response = await fetch(`/api/groups/${id}`, {method: 'DELETE'});
@@ -1710,7 +1937,7 @@ const app = {
 
     this.editingId = id;
     this.updateGroupSelect();
-    document.getElementById('modal-title').innerHTML = icons.edit + ' 编辑监控';
+    document.getElementById('modal-title').innerHTML = `<span class="modal-icon">${icons.edit}</span> ${ui.runtime.canWrite() ? '编辑监控' : '查看监控配置'}`;
     input('monitor-id').value = String(id);
     input('monitor-name').value = monitor.name;
     input('monitor-type').value = monitor.type;
@@ -1770,6 +1997,7 @@ const app = {
   },
 
   async saveMonitor(e) {
+    if (!ui.runtime.guardWrite(e)) return;
     e.preventDefault();
 
     const type = input('monitor-type').value;
@@ -1856,8 +2084,9 @@ const app = {
     }
   },
 
-  /** 暂停/恢复监控。由监控卡片上的 data-action="toggleMonitor" 按钮通过事件委托调用，勿删。 */
+  /** 暂停/恢复监控。由监控卡片上的 data-ui-write data-action="toggleMonitor" 按钮通过事件委托调用，勿删。 */
   async toggleMonitor(id) {
+    if (!ui.runtime.guardWrite()) return;
     try {
       // 找到当前监控
       const monitor = this.monitors.find(m => m.id === id);
@@ -1884,6 +2113,7 @@ const app = {
 
       this.showToast(`监控已${action}`, 'success');
       await this.loadMonitors();
+      await this.loadStats();
       // 异步加载状态条数据
       await this.loadStatusBars();
     } catch (error) {
@@ -1891,10 +2121,11 @@ const app = {
     }
   },
 
-  /** 删除监控。由监控卡片上的 data-action="deleteMonitor" 按钮通过事件委托调用，勿删。 */
+  /** 删除监控。由监控卡片上的 data-ui-write data-action="deleteMonitor" 按钮通过事件委托调用，勿删。 */
   // eslint-disable-next-line no-unused-vars -- 通过 this[action](id) 动态调用
   async deleteMonitor(id) {
-    if (!confirm('确定要删除这个监控吗？')) return;
+    if (!ui.runtime.guardWrite()) return;
+    if (!await ui.confirm('确定要删除这个监控吗？')) return;
 
     try {
       const response = await fetch(`/api/monitors/${id}`, {method: 'DELETE'});
@@ -1913,6 +2144,7 @@ const app = {
   },
 
   async checkNow(id, silent = false) {
+    if (!ui.runtime.guardWrite()) return;
     // 查找主页的按钮（刷新按钮是第二个 btn-icon）
     const item = document.querySelector(`.monitor-item[data-id="${id}"]`);
     const btn = item?.querySelector('.btn-icon-refresh');
@@ -1944,6 +2176,7 @@ const app = {
         return;
       }
       const result = await response.json();
+      if (!response.ok) {if (!silent) this.showToast(result.error || '检测失败', 'error'); return;}
 
       // 如果不是静默模式，显示检测结果提示
       if (!silent) {
@@ -1985,6 +2218,7 @@ const app = {
   },
 
   async refreshAll() {
+    if (!ui.runtime.guardWrite()) return;
     const btn = document.getElementById('btn-refresh');
     btn.classList.add('loading');
 
@@ -1996,8 +2230,11 @@ const app = {
       }
       const results = await response.json();
 
-      const upCount = results.filter(r => r.status === 'up').length;
-      this.showToast(`检测完成: ${upCount}/${results.length} 在线`, 'success');
+      if (!response.ok) throw new Error(results.error || '批量检测失败');
+      const checked = results.filter(result => !result.skipped);
+      const skipped = results.length - checked.length;
+      const upCount = checked.filter(r => r.status === 'up').length;
+      this.showToast(`检测完成: ${upCount}/${checked.length} 在线${skipped ? `，维护跳过 ${skipped} 项` : ''}`, 'success');
 
       await this.loadMonitors();
       await this.loadStats();
@@ -2012,181 +2249,221 @@ const app = {
 
   // ============ 详情弹窗 ============
   async showDetail(id) {
-    const monitor = this.monitors.find(m => m.id === id);
-    if (!monitor) return;
-
+    if (!this.monitors.some(monitor => monitor.id === id)) return;
+    this.resetDetailData();
     this.currentDetailId = id;
     this.currentTimeRange = '24h';
+    this.updateDetailInfo({refreshHistory: false});
 
-    // 重置时间范围按钮
-    document.querySelectorAll('.time-tab').forEach(t => {
-      t.classList.toggle('active', t.getAttribute('data-range') === '24h');
-    });
-
-    // 设置基础信息
-    document.getElementById('detail-title').textContent = monitor.name;
-    document.getElementById('detail-target').textContent = monitor.target + (monitor.port ? ':' + monitor.port : '');
-    document.getElementById('detail-status').className = 'detail-status ' + monitor.status;
-
-    document.getElementById('detail-type').textContent = monitor.type.toUpperCase();
-    document.getElementById('detail-response-time').textContent = monitor.last_response_time ? monitor.last_response_time + ' ms' : '-';
-    document.getElementById('detail-interval').textContent = monitor.interval_seconds + ' 秒';
-    document.getElementById('detail-timeout').textContent = (monitor.timeout_seconds || 10) + ' 秒';
-    document.getElementById('detail-retries').textContent = monitor.retries || 0;
-    document.getElementById('detail-last-check').textContent = monitor.last_check ? this.formatFullTime(monitor.last_check) : '-';
-    const sslRow = document.getElementById('detail-ssl-days-row');
-    const sslVal = document.getElementById('detail-ssl-days');
-    if (monitor.ssl_days_remaining != null) {
-      sslRow.style.display = '';
-      sslVal.textContent = monitor.ssl_days_remaining > 0
-        ? '剩余 ' + monitor.ssl_days_remaining + ' 天'
-        : monitor.ssl_days_remaining === 0
-          ? '已过期'
-          : '已过期 ' + Math.abs(monitor.ssl_days_remaining) + ' 天';
-    } else {
-      sslRow.style.display = 'none';
-      sslVal.textContent = '-';
-    }
-
-    // 显示弹窗
-    document.getElementById('detail-modal').classList.add('active');
-
-    // 立即重置弹窗内容区域的滚动条
-    const detailContent = document.querySelector('.detail-content');
-    if (detailContent) {
-      detailContent.scrollTop = 0;
-    }
-
-    // 加载详细数据
+    // 在弹窗入场前准备等高占位，避免显示上一个监控的数据。
+    this.renderDetailStats(null);
+    byId('detail-history-body').innerHTML = Array.from({length: 6}, () =>
+      '<tr class="history-skeleton" aria-hidden="true"><td colspan="5"><span></span></td></tr>'
+    ).join('');
+    this.setDetailChartPlaceholder('正在加载趋势…', true);
+    this.setDetailLoading(true);
+    byId('detail-modal').classList.add('active');
+    byId('detail-content').scrollTop = 0;
+    document.querySelector('.detail-history-container').scrollTop = 0;
     await this.loadDetailData(id);
-
-    // 在数据加载和渲染完成后再次重置滚动条位置（确保内容渲染后也重置）
-    // 使用 setTimeout 确保 DOM 已完全更新
-    setTimeout(() => {
-      // 重置弹窗内容区域的滚动条
-      if (detailContent) {
-        detailContent.scrollTop = 0;
-      }
-      // 重置检测记录表格的滚动条
-      const historyContainer = document.querySelector('.detail-history-container');
-      if (historyContainer) {
-        historyContainer.scrollTop = 0;
-      }
-    }, 0);
   },
 
-  async loadDetailData(id) {
-    try {
-      // 后端会根据时间范围自动聚合数据，不需要传递 limit
-      const response = await fetch(`/api/monitors/${id}/history?range=${this.currentTimeRange}`, {
-        credentials: 'same-origin'
-      });
-
-      if (response.status === 401) {
-        auth.showLogin();
-        return;
-      }
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        console.error('API错误:', data);
-        this.showToast(data.error || '请求失败', 'error');
-        return;
-      }
-
-      const chartData = data.chartData || []; // 后端聚合后的图表数据
-      const history = data.history || []; // 原始历史记录（用于表格）
-      const stats = data.stats || {avgResponse: 0, minResponse: 0, maxResponse: 0, uptime: 0};
-
-      this.renderDetailChart(chartData);
-      this.renderDetailStats(stats);
-      this.renderDetailHistory(history);
-
-      // 在渲染完成后重置滚动条位置
-      // 使用 setTimeout 确保 DOM 已完全更新
-      setTimeout(() => {
-        const historyContainer = document.querySelector('.detail-history-container');
-        if (historyContainer) {
-          historyContainer.scrollTop = 0;
-        }
-      }, 0);
-    } catch (error) {
-      console.error('加载详情失败:', error);
-      // 即使失败也显示空状态，不要显示 toast 干扰用户
-      this.renderDetailChart([]);
-      this.renderDetailStats({avgResponse: 0, minResponse: 0, maxResponse: 0, uptime: 0});
-      this.renderDetailHistory([]);
-    }
-  },
-
-  renderDetailChart(history) {
-    const ctx = canvas('detail-chart').getContext('2d');
-    if (!ctx) return;
-
+  resetDetailData() {
+    this.detailRequestController?.abort();
+    this.detailRequestController = null;
+    this.detailLoaded = false;
+    this.detailDisplayedRange = null;
+    this.detailFailedRange = null;
+    this.detailHistorySignature = null;
+    this.detailHistory = [];
+    canvas('detail-chart').getAnimations().forEach(animation => animation.cancel());
     if (this.detailChart) {
       this.detailChart.destroy();
       this.detailChart = null;
     }
+  },
 
-    // 处理空数据
-    if (!history || history.length === 0) {
-      this.detailChart = createChart(ctx, {
-        type: 'line',
-        data: {labels: [], datasets: [{data: []}]},
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {legend: {display: false}}
-        }
+  detailRangeLabel(range) {
+    return {'1h': '1 小时', '6h': '6 小时', '12h': '12 小时', '24h': '24 小时', '7d': '7 天', '30d': '30 天'}[range] || range;
+  },
+
+  setDetailChartPlaceholder(message, loading = false, overChart = false) {
+    const placeholder = byId('detail-chart-placeholder');
+    placeholder.hidden = !message;
+    placeholder.classList.toggle('is-loading', loading);
+    placeholder.classList.toggle('over-chart', overChart);
+    byId('detail-chart-placeholder-text').textContent = message;
+  },
+
+  setDetailLoading(loading) {
+    byId('detail-content').classList.toggle('is-detail-loading', loading && !this.detailLoaded);
+    byId('detail-range-feedback').classList.toggle('is-loading', loading);
+    document.querySelectorAll('.detail-chart-section, .detail-history-section').forEach(section => {
+      section.setAttribute('aria-busy', String(loading));
+    });
+    document.querySelectorAll('.time-tab').forEach(tab => {
+      const active = tab.getAttribute('data-range') === this.currentTimeRange;
+      tab.classList.toggle('active', active);
+      tab.classList.toggle('is-pending', active && loading);
+      tab.setAttribute('aria-pressed', String(active));
+    });
+  },
+
+  retryDetailData() {
+    if (!this.currentDetailId) return;
+    this.currentTimeRange = this.detailFailedRange || this.currentTimeRange;
+    this.loadDetailData(this.currentDetailId);
+  },
+
+  async loadDetailData(id, {background = false} = {}) {
+    if (this.currentDetailId !== id || !byId('detail-modal').classList.contains('active')) return;
+    // 自动刷新不打断用户正在切换的范围；手动操作以最后一次请求为准。
+    if (background && this.detailRequestController) return;
+    this.detailRequestController?.abort();
+    const controller = new AbortController();
+    this.detailRequestController = controller;
+    const range = this.currentTimeRange;
+    const isCurrent = () => !controller.signal.aborted && this.detailRequestController === controller && this.currentDetailId === id;
+    const rangeLabel = this.detailRangeLabel(range);
+    const previousRange = this.detailDisplayedRange;
+    const feedback = byId('detail-range-feedback');
+    const message = byId('detail-range-message');
+    this.detailFailedRange = null;
+    feedback.classList.remove('is-error');
+    byId('detail-retry-btn').hidden = true;
+    message.textContent = previousRange && previousRange !== range
+      ? `正在加载 ${rangeLabel}，当前显示 ${this.detailRangeLabel(previousRange)}`
+      : `正在${this.detailLoaded ? '更新' : '加载'}最近 ${rangeLabel}的数据…`;
+    message.removeAttribute('title');
+    this.setDetailLoading(true);
+    if (!this.detailLoaded) this.setDetailChartPlaceholder('正在加载趋势…', true);
+
+    try {
+      const response = await fetch(`/api/monitors/${id}/history?range=${range}`, {
+        credentials: 'same-origin', signal: controller.signal
       });
-      return;
+      if (!isCurrent()) return;
+      if (response.status === 401) {
+        auth.showLogin();
+        return;
+      }
+      const data = await response.json();
+      if (!isCurrent()) return;
+      if (!response.ok) throw new Error(data.error || '请求失败');
+
+      const chartData = data.chartData || [];
+      const history = data.history || [];
+      const stats = data.stats || {};
+      const hasRecords = Number(stats.total) > 0 || history.length > 0 || chartData.some(point => Number(point.count) > 0);
+      const hasMaintenance = chartData.some(point => point.in_maintenance);
+      const hasResponses = chartData.some(point => point.response_time != null);
+      const hasOffline = chartData.some(point => point.status === 'down');
+      this.renderDetailChart(chartData, {range, animate: this.detailLoaded && previousRange !== range});
+      this.renderDetailStats(hasRecords ? stats : null, hasResponses);
+      this.renderDetailHistory(history, {resetScroll: previousRange !== range});
+      this.detailDisplayedRange = range;
+      this.detailLoaded = true;
+      this.setDetailChartPlaceholder(hasResponses ? '' : hasRecords
+        ? hasOffline ? '已记录离线检测，未获得有效响应时间' : '已完成检测，未获得有效响应时间'
+        : hasMaintenance ? '此时间范围包含维护区间，暂无检测样本' : '此时间范围内暂无检测记录', false, hasRecords || hasMaintenance);
+      message.textContent = `最近 ${rangeLabel}的响应趋势与检测记录`;
+      canvas('detail-chart').setAttribute('aria-label', `最近 ${rangeLabel}的响应时间与检测状态${hasMaintenance ? '，包含维护区间' : ''}${hasOffline ? '，包含离线检测' : ''}${hasRecords && !hasResponses ? '，未获得有效响应时间' : ''}`);
+    } catch (error) {
+      if (!isCurrent()) return;
+      this.detailFailedRange = range;
+      // 失败时保留已展示的数据，并恢复对应选中项，避免把旧图误读为新范围。
+      if (this.detailLoaded) this.currentTimeRange = this.detailDisplayedRange;
+      else {
+        this.setDetailChartPlaceholder('数据加载失败，请重试');
+        this.renderDetailHistory([], {message: '暂时无法读取检测记录'});
+      }
+      message.textContent = this.detailLoaded
+        ? `${rangeLabel}加载失败，保留 ${this.detailRangeLabel(this.detailDisplayedRange)}的结果`
+        : '详情数据加载失败，请重新加载';
+      message.title = error.message || '网络连接失败';
+      feedback.classList.add('is-error');
+      byId('detail-retry-btn').hidden = false;
+    } finally {
+      if (this.detailRequestController === controller) {
+        this.detailRequestController = null;
+        this.setDetailLoading(false);
+      }
     }
+  },
+
+
+  renderDetailChart(history, {range = this.currentTimeRange, animate = false} = {}) {
+    this.detailHistory = history || [];
+    const chartCanvas = canvas('detail-chart');
+    const ctx = chartCanvas.getContext('2d');
+    if (!ctx) return;
+    chartCanvas.getAnimations().forEach(animation => animation.cancel());
 
     // 后端已经聚合好数据，直接使用（按时间正序）
-    const data = history;
+    const data = this.detailHistory;
+    const hasResponses = data.some(point => point.response_time != null);
+    const hasRecord = point => point.in_maintenance || Number(point.count) > 0 || point.response_time != null || point.status != null;
 
-    // 获取主题相关的颜色
-    const isDark = theme.current === 'dark';
+    // 获取主题相关的颜色(与 style.css 设计令牌对齐)
+    const styles = getComputedStyle(document.documentElement);
+    const color = name => styles.getPropertyValue(name).trim();
     const colors = {
-      grid: isDark ? '#334155' : '#f1f5f9',
-      text: isDark ? '#64748b' : '#94a3b8',
-      tooltipBg: isDark ? '#1e293b' : 'white',
-      tooltipTitle: isDark ? '#f1f5f9' : '#1e293b',
-      tooltipBody: isDark ? '#94a3b8' : '#64748b',
-      tooltipBorder: isDark ? '#475569' : '#e2e8f0'
+      grid: color('--border-subtle'), text: color('--text-secondary'),
+      tooltipBg: color('--bg-elevated'), tooltipTitle: color('--text-primary'),
+      tooltipBody: color('--text-secondary'), tooltipBorder: color('--border')
     };
+    const pointColors = data.map(h => color(h.status === 'down' ? '--status-down'
+      : h.status === 'warning' ? '--status-warning' : '--accent'));
+    const statusBackgrounds = data.map(point => !hasRecord(point) ? color('--chart-empty-fill')
+      : point.in_maintenance ? color('--chart-fill')
+      : point.status === 'down' ? color('--chart-down-fill')
+        : point.status === 'warning' ? color('--chart-warning-fill') : 'transparent');
+    const statusBorders = data.map(point => !hasRecord(point) ? color('--border-strong')
+      : point.in_maintenance ? color('--accent')
+      : point.status === 'down' ? color('--status-down')
+        : point.status === 'warning' ? color('--status-warning') : 'transparent');
 
-    this.detailChart = createChart(ctx, {
+    const config = {
       type: 'line',
       data: {
-        labels: data.map(h => this.formatChartTime(h.checked_at)),
+        labels: data.map(h => this.formatChartTime(h.checked_at, range)),
         datasets: [{
           label: '响应时间',
+          order: 0,
           data: data.map(h => h.response_time !== null && h.response_time !== undefined ? h.response_time : null),
-          borderColor: '#3b82f6',
-          backgroundColor: isDark ? 'rgba(59, 130, 246, 0.15)' : 'rgba(37, 99, 235, 0.08)',
+          borderColor: color('--accent'),
+          backgroundColor: color('--chart-fill'),
           fill: true,
-          tension: 0.3,
-          pointRadius: 2,
+          cubicInterpolationMode: 'monotone',
+          // 稀疏曲线展示真实采样点；单次有效响应也不能因两侧无数据而不可见。
+          pointRadius: data.map((point, index) => point.response_time != null &&
+            (data.length <= 36 || (data[index - 1]?.response_time == null &&
+              data[index + 1]?.response_time == null)) ? 3 : 0),
           pointHoverRadius: 5,
           borderWidth: 2,
-          spanGaps: true, // 连接数据点之间的间隔（包括 null 值）
-          pointBackgroundColor: data.map(h => {
-            if (h.status === 'up') return '#22c55e';
-            if (h.status === 'warning') return '#f59e0b';
-            return '#ef4444';
-          }),
-          pointBorderColor: data.map(h => {
-            if (h.status === 'up') return '#22c55e';
-            if (h.status === 'warning') return '#f59e0b';
-            return '#ef4444';
-          }),
+          spanGaps: false,
+          pointBackgroundColor: pointColors,
+          pointBorderColor: pointColors,
+        }, {
+          // 状态使用独立隐藏轴铺满对应时间段，不能把无响应的离线记录伪装成 0 ms。
+          type: 'bar',
+          label: '检测状态',
+          order: 1,
+          yAxisID: 'status',
+          data: data.map(() => 1),
+          backgroundColor: statusBackgrounds,
+          borderColor: statusBorders,
+          borderWidth: {bottom: 3, top: 0, left: 0, right: 0},
+          borderSkipped: false,
+          categoryPercentage: 1,
+          barPercentage: 1,
         }]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        // 不同跨度的采样点无法逐点对应；几何动画会让新增点从零基线拉起。
+        animation: false,
         interaction: {
           intersect: false,
           mode: 'index'
@@ -2201,59 +2478,99 @@ const app = {
             borderWidth: 1,
             padding: 10,
             displayColors: false,
+            // 每个时间段只生成一份提示，离线及无记录的时段也可悬浮查看。
+            filter: item => item.datasetIndex === 1,
             callbacks: {
+              title: items => items.length ? this.formatFullTime(data[items[0].dataIndex]?.checked_at) : '',
               label: (context) => {
                 const dataIndex = context.dataIndex;
                 const dataPoint = data[dataIndex];
-                const avgTime = context.parsed.y;
-
-                if (!dataPoint || avgTime === null) {
-                  return '无数据';
-                }
-
-                let label = `平均: ${avgTime} ms`;
+                if (!dataPoint || !hasRecord(dataPoint)) return '无检测记录';
+                const status = dataPoint.status;
+                const statusLabel = status === 'down' ? '包含离线' : status === 'warning' ? '存在波动'
+                  : status === 'up' ? '在线' : '状态未知';
+                const lines = [`时段状态: ${statusLabel}${dataPoint.in_maintenance ? ' · 含维护时段' : ''}`,
+                  dataPoint.response_time != null ? `平均: ${dataPoint.response_time} ms` : '未获得响应时间'];
 
                 // 如果有最小和最大响应时间，显示它们
                 if (dataPoint.min_response_time !== null && dataPoint.min_response_time !== undefined &&
                   dataPoint.max_response_time !== null && dataPoint.max_response_time !== undefined) {
-                  label += `\n最小: ${dataPoint.min_response_time} ms`;
-                  label += `\n最大: ${dataPoint.max_response_time} ms`;
+                  lines.push(`最小: ${dataPoint.min_response_time} ms`);
+                  lines.push(`最大: ${dataPoint.max_response_time} ms`);
                 }
 
+                if (dataPoint.excluded_count) lines.push(`排除统计: ${dataPoint.excluded_count} 次`);
                 // 显示聚合数量（检测次数）
                 if (dataPoint.count !== null && dataPoint.count !== undefined) {
-                  label += `\n检测次数: ${dataPoint.count}`;
+                  lines.push(`检测次数: ${dataPoint.count}`);
                 }
 
-                return label;
+                return lines;
               }
             }
           }
         },
         scales: {
           x: {
+            offset: false,
             grid: {display: false},
-            ticks: {color: colors.text, maxRotation: 0, autoSkip: true, maxTicksLimit: 8}
+            ticks: {color: colors.text, maxRotation: 0, autoSkip: true, autoSkipPadding: 24, maxTicksLimit: 8}
           },
           y: {
+            display: hasResponses,
             grid: {color: colors.grid},
             ticks: {color: colors.text},
             beginAtZero: true
+          },
+          status: {
+            display: false,
+            min: 0,
+            max: 1,
+            grid: {display: false}
           }
         }
       }
-    });
+    };
+    if (this.detailChart) {
+      // 一次提交坐标轴与曲线，再用透明度过渡，避免曲线伸缩和新增点弹跳。
+      this.detailChart.stop();
+      this.detailChart.setActiveElements([]);
+      this.detailChart.tooltip?.setActiveElements([], {x: 0, y: 0});
+      this.detailChart.data.labels = config.data.labels;
+      config.data.datasets.forEach((dataset, index) => {
+        Object.assign(this.detailChart.data.datasets[index], dataset);
+      });
+      this.detailChart.options = config.options;
+      this.detailChart.update('none');
+      if (animate && !ui.motion.matches) {
+        chartCanvas.animate([{opacity: 0.65}, {opacity: 1}], {duration: 160, easing: 'ease-out'});
+      }
+    } else {
+      this.detailChart = createChart(ctx, config);
+    }
   },
 
-  renderDetailStats(stats) {
-    document.getElementById('detail-stat-avg').textContent = stats.avgResponse + ' ms';
-    document.getElementById('detail-stat-min').textContent = stats.minResponse + ' ms';
-    document.getElementById('detail-stat-max').textContent = stats.maxResponse + ' ms';
-    document.getElementById('detail-stat-uptime').textContent = stats.uptime + '%';
+  renderDetailStats(stats, hasResponses = true) {
+    const response = value => hasResponses && value != null ? `${value} ms` : '—';
+    byId('detail-stat-avg').textContent = response(stats?.avgResponse);
+    byId('detail-stat-min').textContent = response(stats?.minResponse);
+    byId('detail-stat-max').textContent = response(stats?.maxResponse);
+    byId('detail-stat-p99').textContent = ui.formatResponseTime(stats?.p99Response);
+    const range = this.detailRangeLabel(this.currentTimeRange);
+    byId('detail-label-avg').title = ui.responseStatDescription('avg', range);
+    byId('detail-label-p99').title = ui.responseStatDescription('p99', range);
+    byId('detail-stat-uptime').textContent = stats?.uptime != null ? `${stats.uptime}%` : '—';
   },
 
-  renderDetailHistory(history) {
+  renderDetailHistory(history, {resetScroll = false, message = '此时间范围内暂无检测记录'} = {}) {
     const tbody = document.getElementById('detail-history-body');
+    const historyContainer = document.querySelector('.detail-history-container');
+    const scrollTop = resetScroll ? 0 : historyContainer.scrollTop;
+    const signature = JSON.stringify([history, message]);
+    if (signature === this.detailHistorySignature) {
+      historyContainer.scrollTop = scrollTop;
+      return;
+    }
 
     // 显示所有返回的历史记录（不再限制100条）
     tbody.innerHTML = history.map(h => `
@@ -2271,11 +2588,11 @@ const app = {
         return `<span class="history-status down">${icons.down} 离线</span>`;
       }
       return `<span class="history-status unknown">${icons.unknown} 未知</span>`;
-    })()}</td>
+    })()}${h.in_maintenance ? '<span class="content-badge">维护' + (h.stats_excluded ? ' · 不计统计' : '') + '</span>' : ''}</td>
         <td>${h.response_time !== null && h.response_time !== undefined ? h.response_time + ' ms' : '-'}</td>
         <td class="history-cell-message" title="${this.escapeHtml(h.message || '-').replace(/"/g, '&quot;')}">${this.escapeHtml(h.message || '-')}</td>
         <td>
-          <button type="button" class="btn-icon-small danger" data-action="deleteHistoryRecord" data-monitor-id="${this.currentDetailId}" data-history-id="${h.id}" title="删除">
+          <button type="button" class="btn-icon-small danger" data-ui-write data-action="deleteHistoryRecord" data-monitor-id="${this.currentDetailId}" data-history-id="${h.id}" title="删除">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
               <polyline points="3 6 5 6 21 6"/>
               <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
@@ -2283,26 +2600,21 @@ const app = {
           </button>
         </td>
       </tr>
-    `).join('');
+    `).join('') || `<tr><td colspan="5" class="history-message">${this.escapeHtml(message)}</td></tr>`;
 
-    // 渲染完成后立即重置滚动条
-    const historyContainer = document.querySelector('.detail-history-container');
-    if (historyContainer) {
-      historyContainer.scrollTop = 0;
-    }
+    this.detailHistorySignature = signature;
+    historyContainer.scrollTop = scrollTop;
   },
 
   closeDetailModal() {
     document.getElementById('detail-modal').classList.remove('active');
     this.currentDetailId = null;
-    if (this.detailChart) {
-      this.detailChart.destroy();
-      this.detailChart = null;
-    }
+    this.resetDetailData();
   },
 
   async clearHistory(id) {
-    if (!confirm('确定要清空此监控的所有历史记录吗？此操作不可恢复。')) {
+    if (!ui.runtime.guardWrite()) return;
+    if (!await ui.confirm('确定要清空此监控的所有历史记录吗？此操作不可恢复。')) {
       return;
     }
 
@@ -2335,7 +2647,8 @@ const app = {
   },
 
   async deleteHistoryRecord(monitorId, historyId) {
-    if (!confirm('确定要删除这条历史记录吗？')) {
+    if (!ui.runtime.guardWrite()) return;
+    if (!await ui.confirm('确定要删除这条历史记录吗？')) {
       return;
     }
 
@@ -2367,11 +2680,15 @@ const app = {
     }
   },
 
-  formatChartTime(dateStr) {
+  formatChartTime(dateStr, range = this.currentTimeRange) {
     if (!dateStr) return '';
     const date = new Date(dateStr);
 
-    // 所有时间范围都显示日期和时分
+    if (isNaN(date.getTime())) return '';
+    if (['1h', '6h', '12h', '24h'].includes(range)) {
+      return new Intl.DateTimeFormat('zh-CN', {hour: '2-digit', minute: '2-digit', hour12: false}).format(date);
+    }
+    // 跨日范围保留日期，完整时间始终可在图表提示中查看。
     return new Intl.DateTimeFormat('zh-CN', {
       month: '2-digit',
       day: '2-digit',
@@ -2402,15 +2719,19 @@ const app = {
   },
 
   startAutoRefresh() {
+    clearInterval(this.refreshInterval);
     this.refreshInterval = setInterval(async () => {
-      await this.loadMonitors();
-      await this.loadStats();
-      // 异步加载状态条数据
-      await this.loadStatusBars();
-
-      // 如果详情弹窗是打开的，也刷新详情数据
-      if (this.currentDetailId) {
-        await this.loadDetailData(this.currentDetailId);
+      if (!auth.user || this.autoRefreshing) return;
+      this.autoRefreshing = true;
+      try {
+        await this.loadMonitors();
+        await this.loadStats();
+        // 异步加载状态条数据；详情已在 loadMonitors 中刷新。
+        await this.loadStatusBars();
+        if (typeof communications !== 'undefined') await communications.load(this.currentView);
+        if (!document.hidden && Date.now() - versions.loadedAt >= 6 * 60 * 60 * 1000) versions.load({quiet: true});
+      } finally {
+        this.autoRefreshing = false;
       }
     }, 30000);
   },
@@ -2447,85 +2768,62 @@ const app = {
   },
 
   // ============ 设置管理 ============
-  async showSettingsModal() {
-    // 先显示模态框，避免等待
-    document.getElementById('settings-modal').classList.add('active');
-    // 切换到基础设置
+  resetSettings() {
+    this.settingsLoadController?.abort();
+    this.settingsLoadController = null;
+    this.hasLoadedSettings = false;
+    form('settings-form').reset();
+    form('settings-form').hidden = true;
+    form('settings-form').inert = true;
+    form('settings-form').removeAttribute('aria-busy');
+    input('smtp-password').placeholder = 'SMTP 登录密码';
+    input('feishu-secret').placeholder = '机器人安全设置中的签名密钥';
+    byId('delete-all-history-btn').disabled = true;
     this.switchSettingsSection('general');
+  },
 
-    // 重置删除确认输入框
-    const confirmInput = input('delete-all-history-confirm');
-    confirmInput.value = '';
-    const deleteBtn = document.getElementById('delete-all-history-btn');
-    if (deleteBtn) deleteBtn.disabled = true;
-
-    // 监听确认输入框，启用/禁用删除按钮
-    if (!confirmInput.hasAttribute('data-listener')) {
-      confirmInput.setAttribute('data-listener', 'true');
-      confirmInput.addEventListener('input', () => {
-        const btn = document.getElementById('delete-all-history-btn');
-        if (btn) {
-          btn.disabled = confirmInput.value.trim() !== 'DELETE';
-        }
-      });
-    }
+  async loadSettings() {
+    // 工作区切换复用已加载的表单，避免请求覆盖未保存的输入。
+    if (this.hasLoadedSettings || this.settingsLoadController) return;
+    const controller = new AbortController();
+    this.settingsLoadController = controller;
+    const settingsForm = form('settings-form');
+    const loadState = byId('settings-load-state');
+    settingsForm.hidden = true;
+    settingsForm.inert = true;
+    settingsForm.setAttribute('aria-busy', 'true');
+    loadState.hidden = false;
+    loadState.classList.remove('is-error');
+    byId('settings-load-message').textContent = '正在加载系统设置…';
+    byId('settings-load-spinner').hidden = false;
+    byId('settings-retry-btn').hidden = true;
 
     try {
-      const response = await fetch('/api/settings', {credentials: 'same-origin'});
+      const response = await fetch('/api/settings', {credentials: 'same-origin', signal: controller.signal});
 
       if (response.status === 401) {
-        document.getElementById('settings-modal').classList.remove('active');
         auth.showLogin();
         return;
       }
 
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        console.error('加载设置失败:', data);
-        // 即使失败也使用默认值
-        input('public-page-title').value = '服务状态监控';
-        this.showToast(data.error || '加载设置失败，使用默认值', 'warning');
-        return;
+        throw new Error(data.error || '加载设置失败，请重试');
       }
 
       const settings = await response.json();
+      if (controller.signal.aborted) return;
       input('public-page-title').value = settings.publicPageTitle || '服务状态监控';
       input('log-retention-days').value = String(settings.logRetentionDays || 30);
-
-      // 加载管理员邮箱（无论当前显示哪个面板，都先加载数据）
-      // 只在设置面板中查找，避免找到 setup 步骤中的输入框
-      const adminSection = document.getElementById('settings-section-admin');
-      if (adminSection) {
-        const adminEmailInput = asInput(adminSection.querySelector('#admin-email-settings'));
-        if (adminEmailInput) {
-          const email = settings.adminEmail || '';
-          adminEmailInput.value = email;
-          // 保存邮箱值到数据属性，以便后续使用
-          adminEmailInput.setAttribute('data-loaded-email', email);
-        }
-      }
+      input('admin-email-settings').value = settings.adminEmail || '';
 
       // 加载邮件配置（无论当前显示哪个面板，都先加载数据）
       input('smtp-host').value = settings.smtpHost || '';
-      input('smtp-port').value = settings.smtpPort || '587';
+      input('smtp-port').value = String(settings.smtpPort || '587');
       input('smtp-user').value = settings.smtpUser || '';
       // 不回填敏感密码
-      const smtpPwdInput = document.getElementById('smtp-password');
-      if (smtpPwdInput) {
-        smtpPwdInput.value = '';
-        smtpPwdInput.placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : '';
-      }
-      input('smtp-from').value = settings.smtpFrom || '';
-      input('smtp-secure').checked = settings.smtpSecure || false;
-
-      // 加载邮件配置（无论当前显示哪个面板，都先加载数据）
-      input('smtp-host').value = settings.smtpHost || '';
-      input('smtp-port').value = settings.smtpPort || '587';
-      input('smtp-user').value = settings.smtpUser || '';
-      if (smtpPwdInput) {
-        smtpPwdInput.value = '';
-        smtpPwdInput.placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : '';
-      }
+      input('smtp-password').value = '';
+      input('smtp-password').placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : 'SMTP 登录密码';
       input('smtp-from').value = settings.smtpFrom || '';
       input('smtp-secure').checked = settings.smtpSecure || false;
 
@@ -2536,11 +2834,8 @@ const app = {
 
       // 加载飞书配置（不回填签名密钥）
       input('feishu-webhook-url').value = settings.feishuWebhookUrl || '';
-      const feishuSecretInput = document.getElementById('feishu-secret');
-      if (feishuSecretInput) {
-        feishuSecretInput.value = '';
-        feishuSecretInput.placeholder = settings.feishuSecretSet ? '已设置（留空不修改）' : '机器人安全设置中的签名密钥';
-      }
+      input('feishu-secret').value = '';
+      input('feishu-secret').placeholder = settings.feishuSecretSet ? '已设置（留空不修改）' : '机器人安全设置中的签名密钥';
 
       // 显示日志表大小
       const logTableSizeText = document.getElementById('log-table-size-text');
@@ -2559,68 +2854,49 @@ const app = {
       }
 
       // 清空密码字段
-      const adminPasswordInput = document.getElementById('admin-password-settings');
-      const adminPasswordConfirmInput = document.getElementById('admin-password-confirm-settings');
-      if (adminPasswordInput) adminPasswordInput.value = '';
-      if (adminPasswordConfirmInput) adminPasswordConfirmInput.value = '';
+      input('admin-password-settings').value = '';
+      input('admin-password-confirm-settings').value = '';
+      this.hasLoadedSettings = true;
+      settingsForm.hidden = false;
+      loadState.hidden = true;
     } catch (error) {
+      if (controller.signal.aborted) return;
       console.error('加载设置失败:', error);
-      // 即使出错也使用默认值
-      input('public-page-title').value = '服务状态监控';
-      input('log-retention-days').value = '30';
-      const adminEmailInput = asInput(document.getElementById('admin-email-settings'));
-      if (adminEmailInput) adminEmailInput.value = '';
-      this.showToast('加载设置失败，使用默认值', 'warning');
+      loadState.classList.add('is-error');
+      byId('settings-load-message').textContent = error.message || '加载设置失败，请重试';
+      byId('settings-load-spinner').hidden = true;
+      byId('settings-retry-btn').hidden = false;
+    } finally {
+      if (this.settingsLoadController === controller) {
+        this.settingsLoadController = null;
+        settingsForm.inert = !this.hasLoadedSettings;
+        settingsForm.removeAttribute('aria-busy');
+      }
     }
   },
 
-  closeSettingsModal() {
-    document.getElementById('settings-modal').classList.remove('active');
-    // 重置到第一个菜单项
-    this.switchSettingsSection('general');
-  },
-
   switchSettingsSection(section) {
+    if (!['general', 'admin', 'email', 'webhook', 'feishu', 'about', 'danger'].includes(section)) return;
     this.currentSettingsSection = section;
 
     // 更新菜单项状态
     document.querySelectorAll('.settings-menu-item').forEach(item => {
-      item.classList.remove('active');
-      if (item.getAttribute('data-section') === section) {
-        item.classList.add('active');
-      }
+      const active = item.getAttribute('data-section') === section;
+      item.classList.toggle('active', active);
+      if (active) item.setAttribute('aria-current', 'true');
+      else item.removeAttribute('aria-current');
     });
 
     // 显示对应的内容区域
     document.querySelectorAll('.settings-section').forEach(sec => {
       if (sec instanceof HTMLElement) {
-        sec.style.display = 'none';
+        sec.hidden = sec.id !== `settings-section-${section}`;
       }
     });
 
-    const targetSection = document.getElementById(`settings-section-${section}`);
-    if (targetSection instanceof HTMLElement) {
-      targetSection.style.display = 'block';
-    }
+    // 打开设置时已统一加载各面板，切换时保留未保存的输入。
 
-    // 如果切换到管理员账户面板，确保邮箱值已加载
-    if (section === 'admin') {
-      // 使用 setTimeout 确保 DOM 已更新后再设置值
-      setTimeout(() => {
-        this.loadAdminEmail().then(_r => {
-        });
-      }, 0);
-    }
-
-    // 如果切换到邮件配置面板，加载邮件配置
-    if (section === 'email') {
-      setTimeout(() => {
-        this.loadEmailConfig().then(_r => {
-        });
-      }, 0);
-    }
-
-    // “清空配置”按钮（放在保存旁边），仅邮件/Webhook 显示
+    // “清空配置”按钮（放在保存旁边），仅通知配置显示
     const clearBtn = document.getElementById('settings-clear-btn');
     if (clearBtn) {
       if (section === 'email') {
@@ -2658,35 +2934,21 @@ const app = {
       }
     }
 
-    // 危险操作不需要保存按钮/底部操作区
-    const footer = document.getElementById('settings-modal-footer');
+    // 危险操作与版本信息不需要保存按钮/底部操作区
+    const footer = document.getElementById('settings-page-footer');
     if (footer) {
-      footer.style.display = section === 'danger' ? 'none' : 'flex';
+      footer.style.display = section === 'danger' || section === 'about' ? 'none' : 'flex';
     }
-  },
-
-  async loadEmailConfig() {
-    try {
-      const response = await fetch('/api/settings', {credentials: 'same-origin'});
-      if (response.ok) {
-        const settings = await response.json();
-        input('smtp-host').value = settings.smtpHost || '';
-        input('smtp-port').value = settings.smtpPort || '587';
-        input('smtp-user').value = settings.smtpUser || '';
-        const smtpPwdInput = document.getElementById('smtp-password');
-        if (smtpPwdInput) {
-          smtpPwdInput.value = '';
-          smtpPwdInput.placeholder = settings.smtpPasswordSet ? '已设置（留空不修改）' : '';
-        }
-        input('smtp-from').value = settings.smtpFrom || '';
-        input('smtp-secure').checked = settings.smtpSecure || false;
-      }
-    } catch (error) {
-      console.error('加载邮件配置失败:', error);
+    if (this.currentView === 'settings') {
+      byId('workspace-footer-note').textContent = section === 'about'
+        ? '版本信息来自当前实例与 GitHub 索引'
+        : '更改设置后，点击保存使其生效';
     }
+    if (section === 'about') versions.render();
   },
 
   async testEmail() {
+    if (!ui.runtime.guardWrite()) return;
     const btn = document.getElementById('test-email-btn');
     const originalText = btn.innerHTML;
     btn.disabled = true;
@@ -2752,6 +3014,7 @@ const app = {
   },
 
   async testWebhook() {
+    if (!ui.runtime.guardWrite()) return;
     const btn = document.getElementById('test-webhook-btn');
     const originalText = btn.innerHTML;
     btn.disabled = true;
@@ -2798,6 +3061,7 @@ const app = {
   },
 
   async testFeishu() {
+    if (!ui.runtime.guardWrite()) return;
     const btn = document.getElementById('test-feishu-btn');
     const originalText = btn.innerHTML;
     btn.disabled = true;
@@ -2843,38 +3107,8 @@ const app = {
     }
   },
 
-  async loadAdminEmail() {
-    try {
-      // 只在设置面板中查找邮箱输入框，避免找到 setup 步骤中的输入框
-      const adminSection = document.getElementById('settings-section-admin');
-      if (!adminSection) return;
-
-      const adminEmailInput = asInput(adminSection.querySelector('#admin-email-settings'));
-      if (!adminEmailInput) return;
-
-      // 先检查是否已有加载的数据
-      const loadedEmail = adminEmailInput.getAttribute('data-loaded-email');
-      if (loadedEmail !== null && loadedEmail !== undefined) {
-        adminEmailInput.value = loadedEmail;
-        return;
-      }
-
-      // 如果没有，则从 API 加载
-      const response = await fetch('/api/settings', {credentials: 'same-origin'});
-      if (response.ok) {
-        const settings = await response.json();
-        const email = settings.adminEmail || '';
-        adminEmailInput.value = email;
-        adminEmailInput.setAttribute('data-loaded-email', email);
-      } else {
-        console.error('加载管理员邮箱失败，响应状态:', response.status);
-      }
-    } catch (error) {
-      console.error('加载管理员邮箱失败:', error);
-    }
-  },
-
   async clearCurrentSettingsConfig() {
+    if (!ui.runtime.guardWrite()) return;
     if (this.currentSettingsSection === 'email') {
       return this.clearEmailConfig('settings-clear-btn');
     }
@@ -2887,7 +3121,8 @@ const app = {
   },
 
   async clearEmailConfig(buttonId = 'clear-email-btn') {
-    if (!confirm('确定要清空邮件配置吗？这将删除已保存的 SMTP 配置（包含密码），用于停用邮件通知。')) {
+    if (!ui.runtime.guardWrite()) return;
+    if (!await ui.confirm('确定要清空邮件配置吗？这将删除已保存的 SMTP 配置（包含密码），用于停用邮件通知。')) {
       return;
     }
 
@@ -2951,7 +3186,8 @@ const app = {
   },
 
   async clearWebhookConfig(buttonId = 'clear-webhook-btn') {
-    if (!confirm('确定要清空 Webhook 配置吗？这将删除已保存的 Webhook 配置，用于停用 Webhook 通知。')) {
+    if (!ui.runtime.guardWrite()) return;
+    if (!await ui.confirm('确定要清空 Webhook 配置吗？这将删除已保存的 Webhook 配置，用于停用 Webhook 通知。')) {
       return;
     }
 
@@ -3004,7 +3240,8 @@ const app = {
   },
 
   async clearFeishuConfig(buttonId = 'clear-feishu-btn') {
-    if (!confirm('确定要清空飞书配置吗？这将删除已保存的飞书 Webhook 和签名密钥，用于停用飞书通知。')) {
+    if (!ui.runtime.guardWrite()) return;
+    if (!await ui.confirm('确定要清空飞书配置吗？这将删除已保存的飞书 Webhook 和签名密钥，用于停用飞书通知。')) {
       return;
     }
 
@@ -3059,7 +3296,9 @@ const app = {
   },
 
   async saveSettings(e) {
+    if (!ui.runtime.guardWrite(e)) return;
     e.preventDefault();
+    if (!this.hasLoadedSettings) return;
 
     const publicPageTitle = input('public-page-title').value.trim() || '服务状态监控';
     const logRetentionDays = parseInt(input('log-retention-days').value, 10);
@@ -3215,6 +3454,7 @@ const app = {
   },
 
   async deleteAllHistory() {
+    if (!ui.runtime.guardWrite()) return;
     const confirmInput = input('delete-all-history-confirm');
     const confirmValue = confirmInput.value.trim();
 
@@ -3223,7 +3463,7 @@ const app = {
       return;
     }
 
-    if (!confirm('确定要删除所有检测历史吗？此操作无法撤销！')) {
+    if (!await ui.confirm('确定要删除所有检测历史吗？此操作无法撤销！')) {
       return;
     }
 

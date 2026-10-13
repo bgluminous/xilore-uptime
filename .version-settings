@@ -1,0 +1,11 @@
+# Offline release validation only. No version copy or credentials.
+RELEASE_BACKEND=github
+RELEASE_PROJECT_CODE=xilore-uptime
+RELEASE_PLATFORMS="docker-linux-amd64 docker-linux-arm64 dockerhub-linux-amd64 dockerhub-linux-arm64"
+RELEASE_VERSION_HOOK=ci/read-version.sh
+RELEASE_ASSET_MODE=existing
+GITHUB_REGISTRY_REPOSITORY=bgluminous/open-source-registry
+GITHUB_REGISTRY_BRANCH=main
+# Docker images stay in their registries; GitHub stores only the version index.
+GITHUB_ALLOW_EXTERNAL_URL=true
+RELEASE_DOWNLOAD_URL=https://hub.docker.com/r/bgluminous/xilore-uptime/tags

@@ -9,12 +9,22 @@ const publicIcons = {
 const publicApp = {
   monitors: [],
   groups: [],
+  hasLoadedData: false,
+  hasRendered: false,
+  collapsedGroups: new Set(),
+  initializedGroups: new Set(),
+  statusBarsState: 'loading',
+  statusBarRequestId: 0,
   // 记录每个监控的状态条签名，避免无变化重绘导致闪烁
   statusBarSignatures: new Map(),
 
   async init() {
+    this.initGroupControls();
+    if (typeof communications !== 'undefined') communications.refreshPublic();
+    await ui.runtime.load();
     // 标题由服务端在 / 路由渲染注入，这里只加载数据
     await this.loadBasicData();
+    this.loadVersion();
 
     this.render();
 
@@ -23,11 +33,62 @@ const publicApp = {
 
     // 每30秒自动刷新
     setInterval(() => {
+      if (typeof communications !== 'undefined') communications.refreshPublic();
       this.loadBasicData().then(() => {
         this.render();
         this.loadStatusBars();
       });
     }, 30000);
+  },
+
+  initGroupControls() {
+    document.getElementById('public-monitor-list').addEventListener('click', event => {
+      if (!(event.target instanceof Element)) return;
+      const button = event.target.closest('.group-header');
+      const section = button?.closest('.group-section');
+      if (!section) return;
+      this.setGroupCollapsed(section, !section.classList.contains('collapsed'));
+      this.updateGroupControls();
+    });
+    document.getElementById('public-expand-all').addEventListener('click', () => this.toggleAllGroups(false));
+    document.getElementById('public-collapse-all').addEventListener('click', () => this.toggleAllGroups(true));
+  },
+
+  setGroupCollapsed(section, collapsed) {
+    const id = section.getAttribute('data-group-id');
+    if (collapsed) this.collapsedGroups.add(id);
+    else this.collapsedGroups.delete(id);
+    section.classList.toggle('collapsed', collapsed);
+    const button = section.querySelector('.group-header');
+    button.setAttribute('aria-expanded', String(!collapsed));
+    button.setAttribute('title', collapsed ? '展开分组' : '折叠分组');
+    section.querySelector('.public-collapse-label').textContent = collapsed ? '展开' : '收起';
+    // 折叠动画期间也隐藏无障碍树和焦点，避免进入不可见内容。
+    section.querySelector('.group-body').toggleAttribute('inert', collapsed);
+  },
+
+  toggleAllGroups(collapsed) {
+    document.querySelectorAll('#public-monitor-list .group-section').forEach(section => this.setGroupCollapsed(section, collapsed));
+    this.updateGroupControls();
+  },
+
+  isGroupCollapsed(groupId, monitors) {
+    const id = String(groupId);
+    if (!this.initializedGroups.has(id)) {
+      this.initializedGroups.add(id);
+      if (!ui.hasCurrentProblem(monitors)) this.collapsedGroups.add(id);
+    }
+    return this.collapsedGroups.has(id);
+  },
+
+  updateGroupControls() {
+    const sections = [...document.querySelectorAll('#public-monitor-list .group-section')];
+    const collapsedCount = sections.filter(section => section.classList.contains('collapsed')).length;
+    document.getElementById('public-group-controls').hidden = sections.length === 0;
+    document.getElementById('public-group-summary').textContent = sections.length ? `${sections.length} 个分组 · ${this.monitors.length} 个服务` : '';
+    // 保留按钮焦点；无可执行变化时用 aria-disabled 描述当前状态。
+    document.getElementById('public-expand-all').setAttribute('aria-disabled', String(collapsedCount === 0));
+    document.getElementById('public-collapse-all').setAttribute('aria-disabled', String(collapsedCount === sections.length));
   },
 
   async loadBasicData() {
@@ -37,6 +98,7 @@ const publicApp = {
         fetch('/api/public/monitors'),
         fetch('/api/public/stats')
       ]);
+      if (!groupsRes.ok || !monitorsRes.ok || !statsRes.ok) throw new Error('暂时无法获取服务状态');
 
       if (groupsRes.ok) {
         this.groups = await groupsRes.json();
@@ -54,8 +116,8 @@ const publicApp = {
 
       if (statsRes.ok) {
         const stats = await statsRes.json();
-        document.querySelector('.public-stat-card.up .public-stat-value').textContent = stats.up || 0;
-        document.querySelector('.public-stat-card.down .public-stat-value').textContent = stats.down || 0;
+        ui.setValue(document.querySelector('.public-stat-card.up .public-stat-value'), stats.up || 0);
+        ui.setValue(document.querySelector('.public-stat-card.down .public-stat-value'), stats.down || 0);
 
         // 计算平均24小时可用率（从监控数据中计算）
         const monitorsWithUptime = this.monitors.filter(m => {
@@ -66,13 +128,21 @@ const publicApp = {
         });
         if (monitorsWithUptime.length > 0) {
           const avgUptime = monitorsWithUptime.reduce((sum, m) => sum + m.uptime_24h, 0) / monitorsWithUptime.length;
-          document.querySelector('.public-stat-card.uptime .public-stat-value').textContent = avgUptime.toFixed(2) + '%';
+          ui.setValue(document.querySelector('.public-stat-card.uptime .public-stat-value'), avgUptime.toFixed(2) + '%');
         } else {
-          document.querySelector('.public-stat-card.uptime .public-stat-value').textContent = '-';
+          ui.setValue(document.querySelector('.public-stat-card.uptime .public-stat-value'), '—');
         }
       }
+      this.hasLoadedData = true;
+      ui.updateHealth(this.monitors, {detailed: true, groups: this.groups});
+      ui.connection(true);
     } catch (error) {
       console.error('加载基础数据失败:', error);
+      ui.connection(false);
+      if (!this.hasLoadedData) {
+        document.getElementById('health-title').textContent = '暂时无法获取服务状态';
+        document.getElementById('health-description').textContent = '请稍后重试，页面会自动尝试重新连接。';
+      }
     }
   },
 
@@ -110,39 +180,55 @@ const publicApp = {
   },
 
   async loadStatusBars() {
+    const requestId = ++this.statusBarRequestId;
     try {
       const statusBarsRes = await fetch('/api/public/monitors/statusbars');
-      if (statusBarsRes.ok) {
-        const statusBars = await statusBarsRes.json();
-        // 更新监控数据中的状态条信息
-        const statusBarMap = new Map(statusBars.map(sb => [String(sb.monitorId), sb.statusBar24h]));
+      if (!statusBarsRes.ok) throw new Error('暂时无法获取状态记录');
+      const statusBars = await statusBarsRes.json();
+      if (requestId !== this.statusBarRequestId) return;
+      // 更新监控数据中的状态条信息
+      const statusBarMap = new Map(statusBars.map(sb => [String(sb.monitorId), sb.statusBar24h]));
 
-        // 只更新状态条（不整页重渲染），并且无变化不重绘，避免“闪一下”
-        this.monitors = this.monitors.map(m => {
-          const key = String(m.id);
-          if (!statusBarMap.has(key)) return m;
+      // 只更新状态条（不整页重渲染），并且无变化不重绘，避免“闪一下”
+      this.monitors = this.monitors.map(m => {
+        const key = String(m.id);
+        if (!statusBarMap.has(key)) return m;
 
-          const sb = statusBarMap.get(key) || null;
-          const sig = this.computeStatusBarSignature(sb);
-          const prevSig = this.statusBarSignatures.get(key);
-          if (sig !== prevSig) {
-            this.statusBarSignatures.set(key, sig);
-            this.updateMonitorStatusBarDom(m.id, sb);
-          }
+        const sb = statusBarMap.get(key) || null;
+        const sig = this.computeStatusBarSignature(sb);
+        const prevSig = this.statusBarSignatures.get(key);
+        if (sig !== prevSig) {
+          this.statusBarSignatures.set(key, sig);
+          this.updateMonitorStatusBarDom(m.id, sb);
+        }
 
-          return {...m, statusBar24h: sb};
-        });
-      }
+        return {...m, statusBar24h: sb};
+      });
+      this.statusBarsState = 'ready';
     } catch (error) {
+      if (requestId !== this.statusBarRequestId) return;
+      this.statusBarsState = 'error';
       console.error('加载状态条数据失败:', error);
+    } finally {
+      if (requestId === this.statusBarRequestId) {
+        ui.groupHistory.update(document.getElementById('public-monitor-list'), this.monitors, this.statusBarsState);
+      }
     }
   },
 
   render() {
     const container = document.getElementById('public-monitor-list');
+    const focusedGroup = document.activeElement?.closest('.group-header')?.closest('.group-section')?.getAttribute('data-group-id');
+
+    if (!this.hasLoadedData) {
+      container.innerHTML = `<div class="empty-state">${ui.icon('alert')}<h3>服务状态暂时不可用</h3><p>请检查网络连接，或稍后刷新页面。</p><button class="btn-secondary" onclick="location.reload()">重新加载</button></div>`;
+      this.updateGroupControls();
+      return;
+    }
 
     if (this.monitors.length === 0) {
-      container.innerHTML = '<div style="text-align: center; padding: 40px; color: var(--text-muted);">暂无公开的服务</div>';
+      container.innerHTML = `<div class="empty-state">${ui.icon('globe')}<h3>暂无公开的服务</h3><p>服务公开后，将在这里展示最新状态。</p></div>`;
+      this.updateGroupControls();
       return;
     }
 
@@ -151,7 +237,7 @@ const publicApp = {
     const ungrouped = [];
 
     this.monitors.forEach(m => {
-      if (m.group_id) {
+      if (m.group_id && this.groups.some(group => String(group.id) === String(m.group_id))) {
         if (!grouped[m.group_id]) grouped[m.group_id] = [];
         grouped[m.group_id].push(m);
       } else {
@@ -184,6 +270,15 @@ const publicApp = {
     }
 
     container.innerHTML = html;
+    this.updateGroupControls();
+    // 定时刷新重建列表后，恢复正在操作的分组按钮焦点。
+    if (focusedGroup !== undefined && focusedGroup !== null) {
+      const section = [...container.querySelectorAll('.group-section')].find(item => item.getAttribute('data-group-id') === focusedGroup);
+      const button = section?.querySelector('.group-header');
+      if (button instanceof HTMLElement) button.focus({preventScroll: true});
+    }
+    if (!this.hasRendered) ui.enter(container);
+    this.hasRendered = true;
   },
 
   getGroupStatus(monitors) {
@@ -193,12 +288,18 @@ const publicApp = {
     const active = monitors.filter(m => m.enabled !== 0 && m.enabled !== false);
     if (active.length === 0) return 'empty';
 
+    if (active.some(m => m.maintenance?.active)) {
+      const outside = active.filter(m => !m.maintenance?.active);
+      if (outside.some(m => m.status === 'down')) return 'critical';
+      if (outside.some(m => m.status === 'warning')) return 'warning';
+      return 'maintenance';
+    }
     const upCount = active.filter(m => m.status === 'up').length;
     const totalCount = active.length;
 
     if (upCount === totalCount) {
       return 'healthy';
-    } else if (upCount === 0) {
+    } else if (active.every(monitor => monitor.status === 'down')) {
       return 'critical';
     } else {
       return 'warning';
@@ -207,16 +308,27 @@ const publicApp = {
 
   renderGroupSection(group, monitors) {
     const status = this.getGroupStatus(monitors);
+    const collapsed = this.isGroupCollapsed(group.id, monitors);
+    const bodyId = `public-group-body-${group.id}`;
+    const buttonId = `public-group-toggle-${group.id}`;
+    const healthLabel = {maintenance: '维护中', healthy: '运行正常', critical: '服务离线', warning: '需要关注', empty: '已暂停检测'}[status];
     return `
-      <div class="group-section ${status}" data-group-id="${group.id}">
-        <div class="group-header">
-          <h3>${this.escapeHtml(group.name)}</h3>
-          <span class="group-count">${monitors.length}</span>
-        </div>
-        <div class="group-monitors">
+      <section class="group-section ${status}${collapsed ? ' collapsed' : ''}" data-group-id="${group.id}" aria-labelledby="${buttonId}">
+        <h3 class="public-group-heading">
+          <button type="button" class="group-header" id="${buttonId}" aria-expanded="${!collapsed}" aria-controls="${bodyId}" title="${collapsed ? '展开分组' : '折叠分组'}">
+            <span class="group-folder" aria-hidden="true">${ui.icon('folder')}</span>
+            <span class="group-title">${this.escapeHtml(group.name)}</span>
+            <span class="group-count">${monitors.length} 项服务</span>
+            <span class="group-health">${healthLabel}${monitors.some(m => m.maintenance?.active && m.enabled) ? ` · 维护 ${monitors.filter(m => m.maintenance?.active && m.enabled).length} 项` : ''}</span>
+            ${ui.groupHistory.render(monitors, this.statusBarsState)}
+            <span class="public-collapse-label" aria-hidden="true">${collapsed ? '展开' : '收起'}</span>
+            <span class="group-toggle" aria-hidden="true">${ui.icon('chevron')}</span>
+          </button>
+        </h3>
+        <div class="group-body" id="${bodyId}"${collapsed ? ' inert' : ''}><div class="group-monitors">
           ${monitors.map(m => this.renderMonitorItem(m)).join('')}
-        </div>
-      </div>
+        </div></div>
+      </section>
     `;
   },
 
@@ -239,12 +351,12 @@ const publicApp = {
         const failCount = (item.downChecks || 0) + (item.warningChecks || 0);
         const uptime = item.uptime !== null && item.uptime !== undefined
           ? item.uptime.toFixed(2) + '%'
-          : '-';
+          : '—';
         const detail = item.message ? this.escapeHtml(item.message) :
           (item.status === 'up' ? '服务正常' :
             (item.status === null ? '无检测数据' : '-'));
 
-        return `时间跨度: ${startStr} ~ ${endStr}\n可用率: ${uptime}\n失败次数 / 总检测次数: ${failCount} / ${totalChecks}\n详细信息: ${detail}`;
+        return `时间跨度: ${startStr} ~ ${endStr}\n可用率: ${uptime}\n失败次数 / 总检测次数: ${failCount} / ${totalChecks}\n详细信息: ${detail}${item.maintenanceChecks || item.segments?.includes('maintenance') ? '\n含维护时段；排除统计 ' + (item.excludedChecks || 0) + ' 次' : ''}`;
       } catch (e) {
         return '';
       }
@@ -317,6 +429,7 @@ const publicApp = {
           const statusClass = subStatus === 'up' ? 'status-bar-segment-up' :
             subStatus === 'down' ? 'status-bar-segment-down' :
               subStatus === 'warning' ? 'status-bar-segment-warning' :
+              subStatus === 'maintenance' ? 'status-bar-segment-maintenance' :
                 'status-bar-segment-empty';
           subItems.push(`<div class="status-bar-segment ${statusClass}" title="${tooltip}"></div>`);
         }
@@ -333,40 +446,45 @@ const publicApp = {
   },
 
   renderMonitorItem(m) {
-    const statusClass = m.status === 'up' ? 'up' : m.status === 'down' ? 'down' : 'unknown';
+    const statusClass = m.maintenance?.active && m.enabled ? 'maintenance' : ['up', 'down', 'warning'].includes(m.status) ? m.status : 'unknown';
     const isPaused = m.enabled === 0 || m.enabled === false;
     const uptimeText = m.uptime_24h !== null && m.uptime_24h !== undefined
       ? m.uptime_24h.toFixed(2) + '%'
-      : '-';
+      : '—';
 
     // 如果状态条数据未加载或为空数组，显示骨架屏
     const statusBarHtml = m.statusBar24h && Array.isArray(m.statusBar24h) && m.statusBar24h.length > 0
       ? this.renderStatusBar24h(m.statusBar24h)
       : this.renderStatusBarSkeleton();
 
-    // 数据块 class 与管理页一致，便于共用样式（含暂停灰度、响应式等）；展示页不展示 SSL
+    // 保留全部公开指标，按服务、运行记录与关键数值对齐为紧凑行。
     return `
       <div class="monitor-item ${statusClass}${isPaused ? ' paused' : ''}" data-id="${m.id}">
-        <div class="monitor-status"></div>
-        <div class="monitor-info">
-          <div class="monitor-name">${this.escapeHtml(m.name)}${isPaused ? '<span class="monitor-paused-badge">已暂停</span>' : ''}</div>
+        <div class="public-service-identity">
+          <div class="monitor-status" aria-hidden="true"></div>
+          <div class="monitor-info">
+            <div class="public-service-heading"><div class="monitor-name">${this.escapeHtml(m.name)}</div><span class="monitor-state-label">${ui.statusLabel(m)}</span></div>
+            <div class="monitor-stat monitor-stat-last-check">
+              <span class="monitor-stat-label">${publicIcons.lastCheck}<span>最后检测</span></span>
+              <span class="monitor-stat-value">${m.last_check ? this.formatFullTime(m.last_check) : '—'}</span>
+            </div>
+          </div>
+        </div>
+        <div class="public-service-history">
+          ${statusBarHtml}
+          <div class="monitor-timeline-label"><span>24 小时前</span><span>现在</span></div>
         </div>
         <div class="monitor-stats">
-          <div class="monitor-stat monitor-stat-ssl-placeholder"></div>
           <div class="monitor-stat monitor-stat-response-time">
-            <span class="monitor-stat-value">${m.last_response_time ? m.last_response_time + 'ms' : '-'}</span>
+            <span class="monitor-stat-value">${m.last_response_time != null ? m.last_response_time + ' ms' : '—'}</span>
             <span class="monitor-stat-label">${publicIcons.responseTime} 响应时间</span>
           </div>
           <div class="monitor-stat monitor-stat-uptime">
             <span class="monitor-stat-value">${uptimeText}</span>
             <span class="monitor-stat-label">${publicIcons.uptime} 24小时可用率</span>
           </div>
-          <div class="monitor-stat monitor-stat-last-check">
-            <span class="monitor-stat-value">${m.last_check ? this.formatFullTime(m.last_check) : '-'}</span>
-            <span class="monitor-stat-label">${publicIcons.lastCheck} 最后检测时间</span>
-          </div>
+          ${ui.renderResponseStats(m)}
         </div>
-        ${statusBarHtml}
       </div>
     `;
   },
@@ -375,6 +493,16 @@ const publicApp = {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  },
+
+  async loadVersion() {
+    try {
+      const response = await fetch('/api/version', {credentials: 'same-origin', cache: 'no-store'});
+      if (!response.ok) return;
+      const data = await response.json();
+      const label = document.getElementById('public-version');
+      if (label && data.version) label.textContent = `v${data.version} · `;
+    } catch (_error) { /* 公开页页脚没有版本号时仍显示原有署名。 */ }
   },
 
   formatFullTime(timeStr) {

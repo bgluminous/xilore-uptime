@@ -6,9 +6,10 @@
   <title>初始化设置 - Xilore Uptime</title>
   <link rel="icon" href="/favicon.png?v=1" type="image/png">
   <link rel="icon" href="/favicon.ico?v=1">
-  <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/utils.js"></script>
 </head>
-<body>
+<body class="setup-page"><div class="setup-topbar"><a class="logo" href="/manage" aria-label="Xilore Uptime 管理首页"><img src="/favicon.png" alt=""><span class="logo-text">Xilore<span class="logo-subtitle">UPTIME MONITOR</span></span></a><button class="btn-theme" type="button" onclick="ui.theme.toggle()" aria-label="切换主题" title="切换主题"><span class="icon-sun" data-ui-icon="sun"></span><span class="icon-moon" data-ui-icon="moon"></span></button></div>
   <!-- 安装向导 -->
   <div id="setup-wizard" class="setup-container">
     <div class="setup-card">
@@ -17,9 +18,9 @@
           <img src="/favicon.png?v=1" alt="Xilore Uptime">
         </div>
         <h1>Xilore Uptime</h1>
-        <p>初始化设置</p>
+        <p>只需几步，开启你的服务监控之旅。</p>
       </div>
-      
+
       <div class="setup-steps">
         <div class="step active" data-step="1">
           <div class="step-number">1</div>
@@ -36,13 +37,13 @@
           <span>完成</span>
         </div>
       </div>
-      
+
       <!-- 步骤1: 数据库配置 -->
       <div class="setup-step-content active" id="step-1">
         <h2>数据库配置</h2>
         <p class="step-desc">请输入 MySQL 数据库连接信息</p>
-        
-        <form id="db-form">
+
+        <form id="db-form" data-ui-write-form data-ui-pending inert>
           <div class="form-row">
             <div class="form-group">
               <label for="db-host">主机地址</label>
@@ -53,64 +54,64 @@
               <input type="number" id="db-port" required placeholder="3306">
             </div>
           </div>
-          
+
           <div class="form-group">
             <label for="db-name">数据库名</label>
             <input type="text" id="db-name" required placeholder="uptime">
           </div>
-          
+
           <div class="form-group">
             <label for="db-user">用户名</label>
             <input type="text" id="db-user" required placeholder="uptime">
           </div>
-          
+
           <div class="form-group">
             <label for="db-password">密码</label>
             <input type="password" id="db-password" placeholder="数据库密码">
           </div>
-          
+
           <div class="form-actions">
-            <button type="button" class="btn-secondary" onclick="setupApp.testDatabase()">测试连接</button>
+            <button type="button" class="btn-secondary" data-ui-write onclick="setupApp.testDatabase()">测试连接</button>
             <button type="submit" class="btn-primary" disabled id="btn-step1-next">下一步</button>
           </div>
         </form>
-        
+
         <div class="test-result" id="db-test-result"></div>
       </div>
-      
+
       <!-- 步骤2: 管理员账户 -->
       <div class="setup-step-content" id="step-2">
         <h2>创建管理员账户</h2>
         <p class="step-desc">设置系统管理员的登录信息</p>
-        
-        <form id="admin-form">
+
+        <form id="admin-form" data-ui-write-form data-ui-pending inert>
           <div class="form-group">
             <label for="admin-username">用户名</label>
             <input type="text" id="admin-username" required minlength="3" placeholder="至少3个字符">
           </div>
-          
+
           <div class="form-group">
             <label for="admin-email">邮箱（可选）</label>
             <input type="email" id="admin-email" placeholder="用于接收通知">
           </div>
-          
+
           <div class="form-group">
             <label for="admin-password">密码</label>
             <input type="password" id="admin-password" required minlength="6" placeholder="至少6个字符">
           </div>
-          
+
           <div class="form-group">
             <label for="admin-password-confirm">确认密码</label>
             <input type="password" id="admin-password-confirm" required placeholder="再次输入密码">
           </div>
-          
+
           <div class="form-actions">
             <button type="button" class="btn-secondary" onclick="setupApp.prevStep()">上一步</button>
             <button type="submit" class="btn-primary">完成安装</button>
           </div>
         </form>
       </div>
-      
+
       <!-- 步骤3: 完成 -->
       <div class="setup-step-content" id="step-3">
         <div class="setup-complete">
@@ -122,7 +123,7 @@
       </div>
     </div>
   </div>
-  
-  <script src="assets/setup.js"></script>
+
+  <script src="/assets/setup.js"></script>
 </body>
 </html>

@@ -24,7 +24,22 @@ const setupApp = {
   dbConfig: null,
   dbHasAdmin: false,
 
-  init() {
+  showError(message) {
+    let error = document.getElementById('setup-error');
+    if (!error) {
+      error = document.createElement('p');
+      error.id = 'setup-error';
+      error.className = 'test-result error';
+      error.setAttribute('role', 'alert');
+      error.tabIndex = -1;
+    }
+    byId(`step-${this.currentStep}`).append(error);
+    error.textContent = message;
+    error.focus();
+  },
+
+  async init() {
+    await ui.runtime.load();
     this.bindEvents();
   },
 
@@ -48,6 +63,7 @@ const setupApp = {
   },
 
   async testDatabase() {
+    if (!ui.runtime.guardWrite()) return;
     const config = {
       host: input('db-host').value,
       port: parseInt(input('db-port').value),
@@ -59,12 +75,8 @@ const setupApp = {
     const resultEl = document.getElementById('db-test-result');
     const nextBtn = document.getElementById('btn-step1-next');
 
-    resultEl.className = 'test-result';
+    resultEl.className = 'test-result testing';
     resultEl.textContent = '正在测试连接...';
-    resultEl.style.display = 'block';
-    resultEl.style.background = '#f0f9ff';
-    resultEl.style.color = 'var(--accent)';
-    resultEl.style.border = '1px solid #bae6fd';
 
     try {
       const response = await fetch('/api/install/test-db', {
@@ -152,6 +164,7 @@ const setupApp = {
 
   // 使用已有管理员完成安装
   async completeSetupWithExistingAdmin() {
+    if (!ui.runtime.guardWrite()) return;
     try {
       const response = await fetch('/api/install/complete', {
         method: 'POST',
@@ -168,19 +181,20 @@ const setupApp = {
         document.getElementById('setup-complete-msg').textContent = '已连接到现有数据库，可以使用原有账户登录';
         this.goToStep(3);
       } else {
-        alert(result.error || '安装失败');
+        this.showError(result.error || '安装失败');
       }
     } catch (e) {
-      alert('安装失败: ' + e.message);
+      this.showError('安装失败: ' + e.message);
     }
   },
 
   async completeSetup() {
+    if (!ui.runtime.guardWrite()) return;
     const password = input('admin-password').value;
     const passwordConfirm = input('admin-password-confirm').value;
 
     if (password !== passwordConfirm) {
-      alert('两次输入的密码不一致');
+      this.showError('两次输入的密码不一致');
       return;
     }
 
@@ -207,10 +221,10 @@ const setupApp = {
         document.getElementById('setup-complete-msg').textContent = 'Xilore UptimeBot 已成功初始化';
         this.nextStep();
       } else {
-        alert(result.error || '安装失败');
+        this.showError(result.error || '安装失败');
       }
     } catch (e) {
-      alert('安装失败: ' + e.message);
+      this.showError('安装失败: ' + e.message);
     }
   }
 };
