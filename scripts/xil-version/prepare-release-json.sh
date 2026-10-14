@@ -68,6 +68,7 @@ else
     ' "$notes" > "$xil_tmp/notes" || xil_fail 2 '无法提取更新说明'
 fi
 xil_readable "$xil_tmp/notes"
+LC_ALL=C awk -f "$script_dir/check-changelog.awk" "$xil_tmp/notes" || xil_fail 2 '更新说明必须包含已审阅的本版变更，不能留空、仅占位或重复总标题'
 XV_TEXT_SIZE=$(wc -c < "$xil_tmp/notes")
 XV_IMAGE=$image XV_ARCH=$arch XV_DOWNLOAD=$download XV_TAG=
 export XV_TEXT_SIZE XV_IMAGE XV_ARCH XV_DOWNLOAD XV_TAG

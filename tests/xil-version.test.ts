@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {spawnSync} from 'node:child_process';
+import {spawnSync, type SpawnSyncReturns} from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -148,6 +148,68 @@ await test('发布 JSON 从权威版本源生成且不打印下载地址', () =>
     assert.equal(payload.downloadUrl, 'https://example.com/app');
     assert.deepEqual(payload.extra, {image: 'bgluminous/xilore-uptime:9.9.9', arch: 'amd64'});
   } finally {
+    fs.rmSync(temp, {recursive: true, force: true});
+  }
+});
+
+await test('发布索引保留 UTF-8 明文与两空格缩进，兼容旧转义格式的幂等比较', () => {
+  const shell = resolveShell(); assert.ok(shell);
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'uptime-registry-json-'));
+  const file = (name: string) => path.join(temp, name).replaceAll('\\', '/');
+  const write = (name: string, text: string) => fs.writeFileSync(file(name), text, 'utf8');
+  const read = (name: string) => fs.readFileSync(file(name), 'utf8');
+  const input = {
+    version: '1.2.3', downloadUrl: 'https://example.com/app',
+    changelog: '更新 😀\n"说明"\\路径\t完成',
+    extra: {'中文键😀': [false, 0, null, {}, [], {control: '\u0000\u0001\b\f\r'}]}
+  };
+  const env = {
+    ...process.env, PATH: [path.dirname(shell), process.env.PATH].join(path.delimiter), LC_ALL: 'C',
+    RELEASE_PROJECT_CODE: 'demo', RELEASE_PLATFORM_CODE: 'linux-x64',
+    VP_OP: 'plan', VP_FILE: file('input.json'), VP_FILE2: file('old.json'),
+    VP_LATEST: file('previous-latest.json'), VP_INDEX: file('previous-index.json'), VP_DIR: temp.replaceAll('\\', '/')
+  };
+  const plan = () => {
+    const result = spawnSync(shell, ['-c',
+      'exec awk -f scripts/version-publish/json.awk -f scripts/version-publish/release.awk'
+    ], {encoding: 'utf8', env});
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  };
+  try {
+    write('input.json', JSON.stringify(input));
+    write('old.json', 'null\n'); write('previous-latest.json', 'null\n'); write('previous-index.json', '[]\n');
+    plan();
+    assert.equal(read('outcome'), 'created\n');
+    const record = read('record.json');
+    assert.deepEqual(JSON.parse(record), {
+      ...input, projectCode: 'demo', platformCode: 'linux-x64',
+      versionCode: encodeOfficialVersion(input.version), forceUpdate: false
+    });
+    assert.equal(read('latest.json'), record);
+    assert.deepEqual(JSON.parse(read('index.json')), [{
+      version: input.version, versionCode: encodeOfficialVersion(input.version)
+    }]);
+    for (const name of ['record.json', 'latest.json', 'index.json']) {
+      const raw = read(name);
+      assert.equal(raw, JSON.stringify(JSON.parse(raw), null, 2) + '\n');
+      assert.doesNotMatch(raw, /\r|\\u4e2d|\\ud83d/i);
+    }
+    assert.match(record, /中文键😀/); assert.match(record, /更新 😀/);
+    assert.ok(record.includes('\\"说明\\"\\\\路径\\t完成'));
+    assert.ok(record.includes('\\u0000\\u0001\\b\\f\\r'));
+
+    // Previous publishers wrote compact ASCII escapes; equal content must stay unchanged.
+    const legacy = (raw: string) => JSON.stringify(JSON.parse(raw)).replace(/[^\x00-\x7f]/g,
+      char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`) + '\n';
+    write('old.json', legacy(record));
+    write('previous-latest.json', legacy(read('latest.json')));
+    write('previous-index.json', legacy(read('index.json')));
+    plan();
+    assert.equal(read('outcome'), 'unchanged\n');
+    assert.equal(read('record.json'), record);
+  } finally {
+    assert.equal(path.dirname(path.resolve(temp)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(temp).startsWith('uptime-registry-json-'));
     fs.rmSync(temp, {recursive: true, force: true});
   }
 });
@@ -304,7 +366,7 @@ await test('发布前校验四个 Docker 平台且拒绝分支版本不符（不
   const shell = resolveShell(); assert.ok(shell);
   const version = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
   const env = {...process.env, PATH: [path.dirname(shell), process.env.PATH].join(path.delimiter)};
-  const script = 'scripts/version-publish/check-version.sh';
+  const script = 'ci/check-release.sh';
   const result = spawnSync(shell, [script, '--branch', `release-${version}`], {encoding: 'utf8', env});
   assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /platforms=4/);
   const invalid = spawnSync(shell, [script, '--branch', 'release-0.0.0'], {encoding: 'utf8', env});
@@ -341,5 +403,97 @@ await test('Docker 登记准备使用真实架构与版本，公开元数据不�
     fs.rmSync(temp, {recursive: true, force: true});
   }
 });
+
+function withReleaseNotesFixture(run: (fixture: {
+  root: string; version: string; notes: string; invoke: (script: string, args?: string[]) => SpawnSyncReturns<string>
+}) => void) {
+  const shell = resolveShell(); assert.ok(shell);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'uptime-release-notes-'));
+  try {
+    for (const relative of ['ci', 'scripts/version-publish', 'scripts/xil-version']) {
+      fs.cpSync(path.resolve(relative), path.join(root, relative), {recursive: true});
+    }
+    for (const name of ['package.json', '.version-settings']) fs.copyFileSync(name, path.join(root, name));
+    fs.mkdirSync(path.join(root, 'docs'));
+    const notes = path.join(root, 'docs/UPDATE_NOTE.md');
+    const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+    const env = {...process.env, RELEASE_PROJECT_CODE: 'xilore-uptime', GITHUB_ALLOW_EXTERNAL_URL: 'true',
+      CI_COMMIT_BRANCH: `release-${version}`, PATH: [path.dirname(shell), process.env.PATH].join(path.delimiter)};
+    const invoke = (script: string, args: string[] = []) => spawnSync(shell, [script, ...args],
+      {cwd: root, encoding: 'utf8', env, timeout: 30000});
+    run({root, version, notes, invoke});
+  } finally {
+    assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(root).startsWith('uptime-release-notes-'));
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+}
+
+await test('本地发布预检与元数据准备拒绝缺失、空白和占位日志，失败保留原输出', () => withReleaseNotesFixture(f => {
+  const out = path.join(f.root, 'release.json');
+  const invalidNotes = [undefined, '', '## 未发布\n \t\n', '## 未发布\n\u00a0\u3000\n',
+    '## 版本 0.0.0\n- 其他版本的真实变更\n',
+    '## 未发布\n### 新增\n- **TODO**\n### 修复\n- [ ] 待补充。\n',
+    '## 未发布\n<!-- 这里待 agent 编写\nTODO\n-->\n',
+    '## 未发布\n- 首个发布版本\n',
+    '## 未发布\n### 更新日志\n- 修复检测错误\n',
+    `## 未发布\n- TBD\n## 版本 ${f.version}\n- 已有旧日志不能掩盖当前占位内容\n`];
+  for (const notes of invalidNotes) {
+    if (notes === undefined) fs.rmSync(f.notes, {force: true});
+    else fs.writeFileSync(f.notes, notes, 'utf8');
+    fs.writeFileSync(out, 'keep original output\n');
+    const prepared = f.invoke('scripts/xil-version/prepare-release-json.sh', ['--out', out.replaceAll('\\', '/')]);
+    assert.equal(prepared.status, 2, `unexpected preparation success: ${JSON.stringify(notes)}`);
+    assert.equal(fs.readFileSync(out, 'utf8'), 'keep original output\n');
+    const checked = f.invoke('ci/check-release.sh', ['--branch', `release-${f.version}`]);
+    assert.equal(checked.status, 2, `unexpected preflight success: ${JSON.stringify(notes)}`);
+    assert.equal(fs.existsSync(path.join(f.root, 'release-out')), false);
+    if (notes !== undefined) assert.equal(fs.readFileSync(f.notes, 'utf8'), notes);
+  }
+}));
+
+await test('日志保留正常下载与安装功能说明及全文换行，支持当前版本章节', () => withReleaseNotesFixture(f => {
+  const body = '### 修复\n\n- 修复下载进度显示和安装后首次检测失败。\n- 支持带引号的名称 "😀"。\n\n';
+  const out = path.join(f.root, 'release.json');
+  fs.writeFileSync(f.notes, body, 'utf8');
+  const prepared = f.invoke('scripts/xil-version/prepare-release-json.sh',
+    ['--out', out.replaceAll('\\', '/'), '--changelog-mode', 'plain']);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  assert.equal(JSON.parse(fs.readFileSync(out, 'utf8')).changelog, body);
+  fs.writeFileSync(f.notes, `# 更新日志\n\n## 未发布\n\n## 版本 ${f.version}\n${body}`, 'utf8');
+  const checked = f.invoke('ci/check-release.sh', ['--branch', `release-${f.version}`]);
+  assert.equal(checked.status, 0, checked.stderr);
+  assert.match(checked.stdout, /validated release changelog/);
+  const selected = f.invoke('scripts/xil-version/prepare-release-json.sh', ['--out', out.replaceAll('\\', '/')]);
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.equal(JSON.parse(fs.readFileSync(out, 'utf8')).changelog, body.trim());
+}));
+
+await test('登记前拒绝任一平台的无效日志；有效重跑复用保存的正文', () => withReleaseNotesFixture(f => {
+  const publisher = path.join(f.root, 'scripts/version-publish/publish-version.sh');
+  fs.copyFileSync(publisher, path.join(f.root, 'scripts/version-publish/real-publish-version.sh'));
+  fs.writeFileSync(publisher, '#!/bin/sh\nset -eu\nif [ "$1" = publish ]; then\n' +
+    '  printf "%s\\n" "$RELEASE_PLATFORM_CODE" >> publish.calls\n  exit 0\nfi\n' +
+    'exec sh "$(dirname "$0")/real-publish-version.sh" "$@"\n');
+  const files = ['docker-linux-amd64', 'dockerhub-linux-amd64'].map(platform => {
+    const dir = path.join(f.root, 'release-out', platform); fs.mkdirSync(dir, {recursive: true});
+    return path.join(dir, 'release.json');
+  });
+  const body = {version: f.version, changelog: '- 修复下载状态显示。', downloadUrl: 'https://example.com/app'};
+  fs.writeFileSync(files[0], JSON.stringify(body));
+  for (const changelog of [undefined, null, '', ' \n', '### 新增\n- TODO', '<!-- 待补充 -->']) {
+    fs.writeFileSync(files[1], JSON.stringify({...body, changelog}));
+    const result = f.invoke('ci/publish-release.sh');
+    assert.equal(result.status, 2, `unexpected publish success: ${JSON.stringify(changelog)}`);
+    assert.equal(fs.existsSync(path.join(f.root, 'publish.calls')), false);
+  }
+  fs.writeFileSync(files[1], JSON.stringify(body));
+  const saved = files.map(file => fs.readFileSync(file, 'utf8'));
+  const published = f.invoke('ci/publish-release.sh');
+  assert.equal(published.status, 0, published.stderr);
+  assert.equal(fs.existsSync(f.notes), false, 'retry must not require or regenerate source notes');
+  assert.equal(fs.readFileSync(path.join(f.root, 'publish.calls'), 'utf8'), 'docker-linux-amd64\ndockerhub-linux-amd64\n');
+  assert.deepEqual(files.map(file => fs.readFileSync(file, 'utf8')), saved);
+}));
 
 console.log(`\n${passed} tests passed`);

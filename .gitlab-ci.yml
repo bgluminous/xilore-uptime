@@ -27,7 +27,7 @@ build:
     - VERSION=$(sh ci/read-version.sh)
     - test -n "$PROJECT_NAME" && test -n "$VERSION" && test -n "$BASE_REPO_URL"
     - test "$CI_COMMIT_BRANCH" = "release-$VERSION"
-    - sh scripts/version-publish/check-version.sh --branch "$CI_COMMIT_BRANCH"
+    - sh ci/check-release.sh --branch "$CI_COMMIT_BRANCH"
     - docker buildx build -t "$BASE_REPO_URL/$PROJECT_NAME:$VERSION" .
     - docker push "$BASE_REPO_URL/$PROJECT_NAME:$VERSION"
     - docker tag "$BASE_REPO_URL/$PROJECT_NAME:$VERSION" "bgluminous/$PROJECT_NAME:$VERSION"
