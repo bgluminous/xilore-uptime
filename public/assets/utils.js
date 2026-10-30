@@ -157,22 +157,22 @@ const ui = {
     overlay.querySelector('[data-confirm="accept"]').textContent = confirmText;
     document.body.append(overlay);
     return new Promise(resolve => {
+      let settled = false;
       const finish = accepted => {
-        document.removeEventListener('keydown', onKey, true);
+        if (settled) return;
+        settled = true;
+        this.dialogDismiss.reset(overlay);
         overlay.classList.remove('active');
         this.syncDialogs();
         overlay.remove();
         this.pendingConfirmation = null;
         resolve(accepted);
       };
-      const onKey = event => {
-        if (event.key === 'Escape') {event.preventDefault(); event.stopImmediatePropagation(); finish(false);}
-      };
       this.pendingConfirmation = () => finish(false);
-      document.addEventListener('keydown', onKey, true);
+      this.dialogDismiss.bind(overlay, {close: () => finish(false)});
       overlay.addEventListener('click', event => {
         if (!(event.target instanceof Element)) return;
-        if (event.target === overlay || event.target.closest('[data-confirm="cancel"]')) finish(false);
+        if (event.target.closest('[data-confirm="cancel"]')) finish(false);
         else if (event.target.closest('[data-confirm="accept"]')) finish(true);
       });
       this.syncDialogs();
@@ -182,6 +182,102 @@ const ui = {
   dialogOrder: [],
   dialogTriggers: new Map(),
   motion: window.matchMedia('(prefers-reduced-motion: reduce)'),
+
+  // 关闭策略与业务清理分离；状态只属于当前最上层浮窗，使用单调时钟判断两次点击。
+  dialogDismiss: {
+    handlers: new WeakMap(),
+    top: null,
+    owner: null,
+    armedUntil: 0,
+    timer: null,
+    hint: null,
+
+    bind(overlay, {mode = () => 'view', busy = () => false, close}) {
+      const bound = this.handlers.has(overlay);
+      this.handlers.set(overlay, {mode, busy, close});
+      if (bound) return;
+      let pointer = null;
+      overlay.addEventListener('pointerdown', event => {
+        pointer = null;
+        if (ui.dialogOrder.at(-1) !== overlay) return;
+        if (event.target === overlay && event.button === 0 && event.isPrimary) {
+          pointer = event.pointerId;
+          // 点击提示时保留当前表单焦点，避免焦点落到背景。
+          event.preventDefault();
+        } else this.reset(overlay);
+      });
+      overlay.addEventListener('pointercancel', () => {pointer = null; this.reset(overlay);});
+      // 键盘或辅助技术合成的内部 click 也会取消确认；先于业务按钮回调执行。
+      overlay.addEventListener('click', event => {
+        if (event.target !== overlay) this.reset(overlay);
+      }, true);
+      overlay.addEventListener('click', event => {
+        const outside = pointer !== null && event.target === overlay && event.button === 0
+          && (event.pointerId === undefined || event.pointerId === pointer);
+        pointer = null;
+        if (outside) this.request(overlay, 'backdrop');
+      });
+      for (const type of ['input', 'change', 'keydown']) overlay.addEventListener(type, () => this.reset(overlay));
+      new MutationObserver(() => {
+        pointer = null;
+        if (!overlay.classList.contains('active')) this.reset(overlay);
+        ui.syncDialogs();
+      }).observe(overlay, {attributes: true, attributeFilter: ['class']});
+    },
+
+    reset(overlay) {
+      if (overlay && this.owner !== overlay) return;
+      clearTimeout(this.timer);
+      this.timer = null;
+      this.owner = null;
+      this.armedUntil = 0;
+      if (this.hint) {
+        this.hint.classList.remove('is-visible');
+        this.hint.querySelector('span').textContent = '';
+      }
+    },
+
+    showHint(overlay, message, arm = false) {
+      this.reset();
+      this.owner = overlay;
+      this.armedUntil = arm ? performance.now() + 2000 : 0;
+      if (!this.hint) {
+        this.hint = document.createElement('div');
+        this.hint.className = 'dialog-dismiss-hint';
+        this.hint.setAttribute('role', 'status');
+        this.hint.setAttribute('aria-live', 'polite');
+        this.hint.setAttribute('aria-atomic', 'true');
+        this.hint.innerHTML = ui.icon('alert') + '<span></span>';
+        document.body.append(this.hint);
+      }
+      this.hint.querySelector('span').textContent = message;
+      this.hint.classList.add('is-visible');
+      this.timer = setTimeout(() => this.reset(overlay), 2000);
+    },
+
+    request(overlay, source = 'button') {
+      if (typeof overlay === 'string') overlay = document.getElementById(overlay);
+      const handler = this.handlers.get(overlay);
+      if (!handler || ui.dialogOrder.at(-1) !== overlay || !overlay.classList.contains('active')) return false;
+      if (handler.busy()) {
+        this.showHint(overlay, '正在保存，请稍候。');
+        return false;
+      }
+      if (handler.mode() === 'edit' && source !== 'button') {
+        if (source === 'escape') {
+          this.showHint(overlay, '请点击关闭按钮，或在 2 秒内点击两次遮罩关闭。');
+          return false;
+        }
+        if (this.owner !== overlay || !this.armedUntil || performance.now() >= this.armedUntil) {
+          this.showHint(overlay, '再次点击关闭', true);
+          return false;
+        }
+      }
+      this.reset(overlay);
+      handler.close();
+      return true;
+    }
+  },
 
   // 服务端状态确认前保持只读；浏览器控件限制只负责体验，后端独立保护数据。
   runtime: {
@@ -264,7 +360,7 @@ const ui = {
         document.querySelectorAll('#group-list [draggable="true"]').forEach(element => element.setAttribute('draggable', 'false'));
         document.querySelectorAll('[data-action="editMonitor"], [data-ui-view-config]').forEach(element => {
           if (element.getAttribute('title') !== '查看配置') element.setAttribute('title', '查看配置');
-          element.setAttribute('aria-label', '查看配置');
+          if (element.getAttribute('aria-label') !== '查看配置') element.setAttribute('aria-label', '查看配置');
         });
         document.querySelectorAll('[data-ui-edit-label]').forEach(element => {
           if (element.textContent !== '查看配置') element.textContent = '查看配置';
@@ -469,6 +565,10 @@ const ui = {
       }
     });
     const top = this.dialogOrder[this.dialogOrder.length - 1];
+    if (top !== this.dialogDismiss.top) {
+      this.dialogDismiss.reset();
+      this.dialogDismiss.top = top;
+    }
     overlays.forEach(overlay => {
       const active = overlay === top;
       overlay.setAttribute('aria-hidden', String(!active));
@@ -498,7 +598,6 @@ const ui = {
       dialog.setAttribute('aria-modal', 'true');
       if (heading) dialog.setAttribute('aria-labelledby', heading.id);
       dialog.setAttribute('tabindex', '-1');
-      new MutationObserver(() => this.syncDialogs()).observe(overlay, {attributes: true, attributeFilter: ['class']});
     });
     this.syncDialogs();
     document.querySelectorAll('.btn-close').forEach(button => button.setAttribute('aria-label', '关闭对话框'));
@@ -507,6 +606,12 @@ const ui = {
     });
     document.addEventListener('keydown', event => {
       const top = this.dialogOrder[this.dialogOrder.length - 1] || (document.body.classList.contains('sidebar-open') ? document.getElementById('app-sidebar') : null);
+      if (event.key === 'Escape' && this.dialogOrder.length && !event.isComposing) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this.dialogDismiss.request(top, 'escape');
+        return;
+      }
       if (event.key === 'Tab' && top) {
         const focusable = this.focusableElements(top);
         const first = focusable[0];

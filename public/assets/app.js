@@ -411,6 +411,7 @@ const auth = {
 
   showLogin() {
     clearInterval(app.refreshInterval);
+    app.closeModal(true);
     app.closeDetailModal();
     app.resetSettings();
     if (typeof communications !== 'undefined') communications.reset();
@@ -503,6 +504,10 @@ const app = {
   monitors: [],
   groups: [],
   editingId: null,
+  monitorFormMode: 'edit',
+  monitorFormSession: 0,
+  monitorSaving: false,
+  monitorSaveController: null,
   currentDetailId: null,
   currentTimeRange: '24h',
   refreshInterval: null,
@@ -522,6 +527,9 @@ const app = {
   collapsedGroups: new Set(),
   eventsBound: false,
   animateNextList: true,
+  monitorLayout: 'rows',
+  overviewAnimations: new Set(),
+  monitorSnapshots: new WeakMap(),
   hasLoadedMonitors: false,
   detailHistory: [],
   detailLoaded: false,
@@ -613,7 +621,14 @@ const app = {
 
   bindEvents() {
     if (this.eventsBound) return;
+    this.initMonitorLayout();
     this.eventsBound = true;
+    ui.dialogDismiss.bind(byId('monitor-modal'), {
+      mode: () => this.monitorFormMode,
+      busy: () => this.monitorSaving,
+      close: () => this.closeModal(true)
+    });
+    ui.dialogDismiss.bind(byId('detail-modal'), {close: () => this.closeDetailModal()});
     byId('main-app').querySelector('.skip-link').addEventListener('click', event => {
       // 保留当前页面地址，避免无障碍正文跳转覆盖工作区的路由锚点。
       event.preventDefault();
@@ -632,11 +647,6 @@ const app = {
       }
     });
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        const top = ui.dialogOrder[ui.dialogOrder.length - 1];
-        const close = {'monitor-modal': 'closeModal', 'detail-modal': 'closeDetailModal'};
-        if (top && close[top.id]) this[close[top.id]]();
-      }
       const target = eventElement(e);
       if (e.key === '/' && this.currentView === 'overview' && !e.ctrlKey && !e.metaKey && !e.altKey && !ui.dialogOrder.length && target && !target.closest('input, textarea, select, [contenteditable="true"]') && auth.user) {
         e.preventDefault();
@@ -670,16 +680,10 @@ const app = {
       if (this.detailChart) this.renderDetailChart(this.detailHistory, {range: this.detailDisplayedRange});
     });
 
-    // 监控弹窗点击外部不关闭（避免误操作丢失数据）
-
     document.getElementById('detail-modal').addEventListener('click', (e) => {
       const target = eventElement(e);
       if (!target) return;
 
-      if (hasClass(target, 'modal-overlay')) {
-        this.closeDetailModal();
-        return;
-      }
       const delBtn = target.closest('button[data-action="deleteHistoryRecord"]');
       if (delBtn) {
         e.stopPropagation();
@@ -737,11 +741,81 @@ const app = {
     });
   },
 
+  initMonitorLayout() {
+    let layout = 'rows';
+    try { layout = localStorage.getItem('xilore:overview-layout') || 'rows'; } catch (_error) { /* 存储不可用时使用默认布局。 */ }
+    this.setMonitorLayout(layout, {persist: false, animate: false});
+    document.querySelectorAll('button[data-monitor-layout]').forEach(button => {
+      button.addEventListener('click', () => this.setMonitorLayout(button.getAttribute('data-monitor-layout')));
+    });
+    ui.motion.addEventListener('change', () => {
+      if (ui.motion.matches) this.cancelOverviewAnimations();
+    });
+  },
+
+  setMonitorLayout(layout, {persist = true, animate = true} = {}) {
+    const next = layout === 'cards' ? 'cards' : 'rows';
+    const positions = animate && next !== this.monitorLayout ? this.captureOverviewPositions() : null;
+    this.monitorLayout = next;
+    byId('overview-view').setAttribute('data-monitor-layout', next);
+    document.querySelectorAll('button[data-monitor-layout]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.getAttribute('data-monitor-layout') === next));
+    });
+    if (persist) {
+      try { localStorage.setItem('xilore:overview-layout', next); } catch (_error) { /* 当前页面仍可切换。 */ }
+    }
+    if (positions) this.animateOverview(positions);
+  },
+
+  cancelOverviewAnimations() {
+    this.overviewAnimations.forEach(animation => animation.cancel());
+    this.overviewAnimations.clear();
+  },
+
+  visibleOverviewItems() {
+    const positions = new Map();
+    const container = document.getElementById('monitor-list');
+    if (!container || byId('overview-view').hidden) return positions;
+    for (const element of container.querySelectorAll('.group-header-row, .monitor-item, .empty-state')) {
+      if (element.closest('[inert]')) continue;
+      const rect = element.getBoundingClientRect();
+      if (rect.top >= window.innerHeight) break;
+      if (rect.width && rect.height && rect.bottom > 64) positions.set(element, rect);
+      if (positions.size === 20) break;
+    }
+    return positions;
+  },
+
+  captureOverviewPositions() {
+    this.cancelOverviewAnimations();
+    return ui.motion.matches ? null : this.visibleOverviewItems();
+  },
+
+  animateOverview(previous) {
+    if (ui.motion.matches) return;
+    // 先批量测量最终布局，再仅动画合成属性，避免逐项读写交错造成重复布局。
+    const next = this.visibleOverviewItems();
+    let index = 0;
+    next.forEach((rect, element) => {
+      const before = previous.get(element);
+      const x = before ? before.left - rect.left : 0;
+      const y = before ? before.top - rect.top : 6;
+      if (before && Math.abs(x) < 1 && Math.abs(y) < 1) return;
+      const animation = element.animate([
+        {opacity: before ? 0.8 : 0, transform: `translate(${x}px, ${y}px)`},
+        {opacity: 1, transform: 'translate(0, 0)'}
+      ], {duration: 200, delay: before ? 0 : Math.min(index++, 3) * 12, easing: 'cubic-bezier(.2,.8,.2,1)'});
+      this.overviewAnimations.add(animation);
+      animation.onfinish = animation.oncancel = () => this.overviewAnimations.delete(animation);
+    });
+  },
+
   showWorkspaceView(view, {updateHistory = false, focus = false} = {}) {
     if (!['overview', 'groups', 'settings', 'announcements', 'maintenances'].includes(view)) return;
     const changed = this.currentView !== view;
     if (changed) this.viewScroll[this.currentView] = window.scrollY;
     this.currentView = view;
+    byId('main-content').classList.toggle('overview-active', view === 'overview');
     if (updateHistory && location.hash !== `#${view}`) history.pushState(null, '', `#${view}`);
 
     document.querySelectorAll('[data-workspace-view]').forEach(panel => {
@@ -913,20 +987,8 @@ const app = {
   },
 
   computeStatusBarSignature(statusBar24h) {
-    if (!Array.isArray(statusBar24h)) return '';
-    let out = '';
-    for (const h of statusBar24h) {
-      out += (h?.status || '_') + ':';
-      const seg = Array.isArray(h?.segments) ? h.segments : null;
-      if (seg) {
-        for (let i = 0; i < seg.length; i++) {
-          const s = seg[i];
-          out += s ? s[0] : '_'; // up/down/warning -> u/d/w
-        }
-      }
-      out += ';';
-    }
-    return out;
+    // 同色状态的时间范围、统计和消息也会变化，必须同步悬浮提示。
+    return Array.isArray(statusBar24h) ? JSON.stringify(statusBar24h) : '';
   },
 
   updateMonitorStatusBarDom(monitorId, statusBar24h) {
@@ -1054,6 +1116,10 @@ const app = {
         return;
       }
 
+      const positions = this.animateNextList ? this.captureOverviewPositions() : null;
+      this.animateNextList = false;
+      const listHadFocus = container.contains(document.activeElement);
+
       const scopedMonitors = this.monitors.filter(monitor => {
         const matchesSearch = `${monitor.name || ''} ${monitor.target || ''}`.toLowerCase().includes(this.searchQuery);
         const matchesGroup = this.groupFilter === 'all' || String(monitor.group_id || 0) === this.groupFilter;
@@ -1072,18 +1138,23 @@ const app = {
       const hasFilters = Boolean(this.searchQuery) || this.statusFilter !== 'all' || this.groupFilter !== 'all';
 
       if (this.monitors.length === 0) {
-        container.innerHTML = `
+        const html = `
           <div class="empty-state">
             ${ui.icon('activity')}<h3>从第一次心跳开始</h3>
             <p>添加你的第一个监控，让服务的每一刻在线都清晰可见。</p>
-            <button class="btn-primary" onclick="app.showAddModal()">${icons.add} 添加监控</button>
+            <button class="btn-primary" data-ui-write onclick="app.showAddModal()">${icons.add} 添加监控</button>
           </div>
         `;
+        if (container.innerHTML !== html) container.innerHTML = html;
+        if (listHadFocus) input('monitor-search').focus({preventScroll: true});
+        if (positions) this.animateOverview(positions);
         return;
       }
 
       if (filteredMonitors.length === 0 && hasFilters) {
         container.innerHTML = `<div class="empty-state">${ui.icon('search')}<h3>没有找到匹配的监控</h3><p>试试其他关键词，或调整状态与分组筛选。</p><button class="btn-secondary" onclick="app.clearFilters()">清除筛选</button></div>`;
+        if (listHadFocus) input('monitor-search').focus({preventScroll: true});
+        if (positions) this.animateOverview(positions);
         return;
       }
 
@@ -1100,7 +1171,7 @@ const app = {
         }
       });
 
-      let html = '';
+      const sections = [];
 
       // 渲染分组（包括空分组）
       // 确保groups已初始化
@@ -1112,7 +1183,7 @@ const app = {
           // 按名称排序：英文字母在中文前面
           return sortByName(a.name || '', b.name || '');
         });
-        if (!hasFilters || monitors.length > 0) html += this.renderGroupSection(group, monitors);
+        if (!hasFilters || monitors.length > 0) sections.push({group, monitors});
       });
 
       // 渲染未分组（如果有未分组的监控，或者没有任何监控时显示）
@@ -1121,25 +1192,11 @@ const app = {
           // 按名称排序：英文字母在中文前面
           return sortByName(a.name || '', b.name || '');
         });
-        html += this.renderGroupSection({id: 0, name: '未分组'}, sortedUngrouped);
+        sections.push({group: {id: 0, name: '未分组'}, monitors: sortedUngrouped});
       }
 
-      // 数据轮询保留折叠状态和键盘焦点，只在首次展示或筛选后播放入场动画。
-      const focused = document.activeElement;
-      const focusedCard = focused instanceof Element ? focused.closest('.monitor-item') : null;
-      const focusedGroup = focused instanceof Element ? focused.closest('.group-header') : null;
-      const focusSelector = focusedCard
-        ? `.monitor-item[data-id="${focusedCard.getAttribute('data-id')}"]${focused === focusedCard ? '' : focused.matches('button[data-action]') ? ` button[data-action="${focused.getAttribute('data-action')}"]` : ' .monitor-target-link'}`
-        : focusedGroup ? `.group-section[data-group-id="${focusedGroup.parentElement.getAttribute('data-group-id')}"] .group-header` : null;
-      if (container.innerHTML !== html) {
-        container.innerHTML = html;
-        if (focusSelector) {
-          const nextFocus = container.querySelector(focusSelector);
-          if (nextFocus instanceof HTMLElement) nextFocus.focus({preventScroll: true});
-        }
-      }
-      if (this.animateNextList) ui.enter(container);
-      this.animateNextList = false;
+      this.reconcileMonitorGroups(container, sections);
+      if (positions) this.animateOverview(positions);
     } catch (error) {
       console.error('渲染列表失败:', error);
       const container = document.getElementById('monitor-list');
@@ -1147,6 +1204,109 @@ const app = {
         container.innerHTML = `<div class="empty-state"><h3>渲染列表时出错: ${this.escapeHtml(error.message)}</h3></div>`;
       }
       throw error;
+    }
+  },
+
+  reconcileMonitorGroups(container, sections) {
+    const groups = new Map([...container.querySelectorAll('.group-section')].map(node => [node.dataset.groupId, node]));
+    const items = new Map([...container.querySelectorAll('.monitor-item')].map(node => [node.dataset.id, node]));
+    const focused = document.activeElement;
+    const hadFocus = focused instanceof HTMLElement && container.contains(focused);
+    const create = html => {
+      const template = document.createElement('template');
+      template.innerHTML = html;
+      return template.content.firstElementChild;
+    };
+    // 空态与错误提示没有可复用的监控节点。
+    for (const child of [...container.children]) {
+      if (!child.matches('.group-section')) child.remove();
+    }
+    sections.forEach(({group, monitors}, groupIndex) => {
+      const id = String(group.id);
+      const section = groups.get(id) || create(this.renderGroupSection(group, []));
+      groups.delete(id);
+      const status = this.getGroupStatus(monitors);
+      const collapsed = this.collapsedGroups.has(id);
+      const className = `group-section ${status}${collapsed ? ' collapsed' : ''}`;
+      if (section.className !== className) section.className = className;
+      const header = section.querySelector('.group-header');
+      if (header.getAttribute('aria-expanded') !== String(!collapsed)) header.setAttribute('aria-expanded', String(!collapsed));
+      const body = section.querySelector('.group-body');
+      if (body.inert !== collapsed) body.inert = collapsed;
+      const setText = (selector, text) => {
+        const node = section.querySelector(selector);
+        if (node.textContent !== text) node.textContent = text;
+      };
+      setText('.group-title', group.name);
+      const title = section.querySelector('.group-title');
+      if (title.getAttribute('title') !== group.name) title.setAttribute('title', group.name);
+      const add = section.querySelector('.group-add-monitor');
+      const addLabel = `添加监控到 ${group.name}`;
+      if (add.getAttribute('aria-label') !== addLabel) add.setAttribute('aria-label', addLabel);
+      setText('.group-count', `${monitors.length} 项`);
+      const maintained = monitors.filter(m => m.maintenance?.active && m.enabled).length;
+      setText('.group-health', {maintenance: '维护中', healthy: '运行正常', critical: '服务离线', warning: '需要关注', empty: '暂无检测'}[status] + (maintained ? ` · 维护 ${maintained} 项` : ''));
+      const parent = section.querySelector('.group-monitors');
+      const empty = parent.querySelector('.empty-group-message');
+      if (monitors.length && empty) empty.remove();
+      monitors.forEach((monitor, index) => {
+        const key = String(monitor.id);
+        const item = items.get(key) || create(this.renderMonitorItem(monitor));
+        items.delete(key);
+        this.updateMonitorItem(item, monitor);
+        if (parent.children[index] !== item) parent.insertBefore(item, parent.children[index] || null);
+      });
+      if (!monitors.length && !empty) parent.insertAdjacentHTML('beforeend', '<div class="empty-group-message">该分组暂无监控项目</div>');
+      if (container.children[groupIndex] !== section) container.insertBefore(section, container.children[groupIndex] || null);
+    });
+    items.forEach(item => item.remove());
+    groups.forEach(section => section.remove());
+    ui.groupHistory.update(container, this.monitors, this.statusBarsState);
+    if (hadFocus && document.activeElement !== focused) {
+      // 跨组移动仍复用原节点；移除被聚焦的监控时提供可预测的键盘落点。
+      const target = focused.isConnected && !focused.closest('[inert]') ? focused : input('monitor-search');
+      target.focus({preventScroll: true});
+    }
+  },
+
+  updateMonitorItem(item, monitor) {
+    const signature = JSON.stringify([monitor.name, monitor.target, monitor.port, monitor.type, this.monitorState(monitor),
+      monitor.last_response_time, monitor.avg_response_24h, monitor.p99_response_24h, monitor.uptime_24h]);
+    if (this.monitorSnapshots.get(item) === signature) return;
+    this.monitorSnapshots.set(item, signature);
+    const setText = (node, text) => { if (node.textContent !== text) node.textContent = text; };
+    const setAttribute = (node, key, value) => { if (node.getAttribute(key) !== value) node.setAttribute(key, value); };
+    setAttribute(item, 'class', `monitor-item ${this.monitorState(monitor)}`);
+    setAttribute(item, 'aria-label', `查看 ${monitor.name} 的监控详情`);
+    const name = item.querySelector('.monitor-name');
+    setText(name, monitor.name);
+    setAttribute(name, 'title', monitor.name);
+    setText(item.querySelector('.monitor-type'), monitor.type.toUpperCase());
+    setText(item.querySelector('.monitor-state-label'), ui.statusLabel(monitor));
+    const targetText = `${monitor.target}${monitor.port ? ':' + monitor.port : ''}`;
+    const url = this.buildMonitorOpenUrl(monitor);
+    let target = item.querySelector('.monitor-target');
+    if (Boolean(url) !== (target.tagName === 'A')) {
+      const replacement = document.createElement(url ? 'a' : 'span');
+      replacement.className = `monitor-target${url ? ' monitor-target-link' : ''}`;
+      if (url) { replacement.setAttribute('target', '_blank'); replacement.setAttribute('rel', 'noopener noreferrer'); }
+      target.replaceWith(replacement);
+      target = replacement;
+    }
+    setText(target, targetText);
+    setAttribute(target, 'title', url ? `打开 ${url}` : targetText);
+    if (url) setAttribute(target, 'href', url);
+    const values = [ui.formatResponseTime(monitor.last_response_time), ui.formatResponseTime(monitor.avg_response_24h),
+      ui.formatResponseTime(monitor.p99_response_24h), monitor.uptime_24h == null ? '—' : monitor.uptime_24h.toFixed(2) + '%'];
+    item.querySelectorAll('.monitor-stat-value').forEach((node, index) => setText(node, values[index]));
+    const paused = this.monitorState(monitor) === 'paused';
+    const pause = item.querySelector('[data-action="toggleMonitor"]');
+    const label = paused ? '恢复检测' : '暂停检测';
+    if (pause.getAttribute('aria-label') !== label) {
+      pause.setAttribute('aria-label', label);
+      pause.classList.toggle('paused', paused);
+      pause.innerHTML = this.monitorPauseIcon(paused);
+      if (ui.runtime.canWrite()) pause.setAttribute('title', label);
     }
   },
 
@@ -1184,6 +1344,7 @@ const app = {
 
     return `
       <div class="group-section ${status}${collapsed ? ' collapsed' : ''}" data-group-id="${group.id}">
+        <div class="group-header-row">
         <button class="group-header" type="button" onclick="app.toggleGroup(${group.id})" aria-expanded="${!collapsed}" aria-controls="group-monitors-${group.id}">
           <svg class="group-toggle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="6 9 12 15 18 9"/>
@@ -1195,6 +1356,8 @@ const app = {
           ${ui.groupHistory.render(monitors, this.statusBarsState)}
           <span class="group-collapse-label" aria-hidden="true"></span>
         </button>
+        <button class="group-add-monitor" type="button" data-ui-write onclick="app.showAddModal(${group.id})" title="在此分组添加监控" aria-label="添加监控到 ${this.escapeHtml(group.name).replace(/"/g, '&quot;')}">${ui.icon('plus')}<span>添加</span></button>
+        </div>
         <div class="group-body" id="group-monitors-${group.id}"${collapsed ? ' inert' : ''}><div class="group-content"><div class="group-monitors">
           ${isEmpty
       ? '<div class="empty-group-message">该分组暂无监控项目</div>'
@@ -1205,14 +1368,11 @@ const app = {
     `;
   },
 
-  // 渲染24小时状态条（共享函数）
+  // 管理端每小时一个渐变元素，保留五分钟粒度，避免为每个监控创建 288 个子节点。
   renderStatusBar24h(statusBar24h) {
     if (!statusBar24h || !Array.isArray(statusBar24h) || statusBar24h.length === 0) {
       return '';
     }
-
-    // 强制使用正常模式（不启用细竖线模式）
-    const useThinLine = false;
 
     // 生成 tooltip 文本
     const getTooltip = (item) => {
@@ -1242,7 +1402,6 @@ const app = {
       const segmentDuration = (endTime - startTime) / 12; // 每个小时间段的时间长度（5分钟）
       const tooltip = getTooltip(item).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-      const subItems = [];
       let subStatuses;
 
       // 优先使用后端已聚合好的 segments（前端只负责渲染）
@@ -1284,38 +1443,32 @@ const app = {
         }
       }
 
-      for (let i = 0; i < 12; i++) {
-        const subStatus = subStatuses[i];
-        if (useThinLine) {
-          // 细竖线模式：空数据保持灰色，warning/down 用细竖线，其余绿色
-          if (subStatus === 'warning') {
-            subItems.push(`<div class="status-bar-segment status-bar-segment-thin-warning" title="${tooltip}"></div>`);
-          } else if (subStatus === 'down') {
-            subItems.push(`<div class="status-bar-segment status-bar-segment-thin-down" title="${tooltip}"></div>`);
-          } else if (subStatus == null) {
-            subItems.push(`<div class="status-bar-segment status-bar-segment-empty" title="${tooltip}"></div>`);
-          } else {
-            subItems.push(`<div class="status-bar-segment status-bar-segment-up" title="${tooltip}"></div>`);
-          }
-        } else {
-          // 正常模式：显示实际状态颜色
-          const statusClass = subStatus === 'up' ? 'status-bar-segment-up' :
-            subStatus === 'down' ? 'status-bar-segment-down' :
-              subStatus === 'warning' ? 'status-bar-segment-warning' :
-              subStatus === 'maintenance' ? 'status-bar-segment-maintenance' :
-                'status-bar-segment-empty';
-          subItems.push(`<div class="status-bar-segment ${statusClass}" title="${tooltip}"></div>`);
-        }
-      }
-      return `<div class="status-bar-group">${subItems.join('')}</div>`;
+      const colors = {up: 'var(--status-up-bar)', down: 'var(--status-down)', warning: 'var(--status-warning)',
+        maintenance: 'color-mix(in srgb, var(--accent) 65%, transparent)'};
+      const runs = [];
+      subStatuses.forEach((status, index) => {
+        const color = colors[status] || 'var(--status-empty-bar)';
+        const last = runs[runs.length - 1];
+        if (last?.color === color) last.end = index + 1;
+        else runs.push({color, start: index, end: index + 1});
+      });
+      const stops = runs.map(run => `${run.color} ${(run.start * 100 / 12).toFixed(3)}% ${(run.end * 100 / 12).toFixed(3)}%`);
+      const background = runs.length === 1 ? runs[0].color : `linear-gradient(to right,${stops.join(',')})`;
+      return `<span class="status-bar-group" style="background:${background}" title="${tooltip}"></span>`;
     }).join('');
 
-    return `<div class="monitor-status-bar ${useThinLine ? 'status-bar-thin' : ''}">${segments}</div>`;
+    return `<div class="monitor-status-bar" role="img" aria-label="最近 24 小时：绿色正常，黄色波动，红色离线，紫色维护，灰色无数据">${segments}</div>`;
   },
 
   renderStatusBarSkeleton() {
     // 显示一个整体的骨架屏条，不显示小格子
-    return `<div class="monitor-status-bar status-bar-skeleton-container"><div class="status-bar-skeleton-full"></div></div>`;
+    return `<div class="monitor-status-bar status-bar-skeleton-container" role="img" aria-label="状态记录待加载"><div class="status-bar-skeleton-full"></div></div>`;
+  },
+
+  monitorPauseIcon(paused) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">${paused
+      ? '<polygon points="5 3 19 12 5 21 5 3"/>'
+      : '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>'}</svg>`;
   },
 
   renderMonitorItem(m) {
@@ -1324,80 +1477,72 @@ const app = {
       ? this.renderStatusBar24h(m.statusBar24h)
       : this.renderStatusBarSkeleton();
     const isPaused = m.enabled === 0 || m.enabled === false;
-    const pauseIcon = isPaused
-      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>`
-      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+    const pauseIcon = this.monitorPauseIcon(isPaused);
     const pauseTitle = isPaused ? '恢复检测' : '暂停检测';
 
     const targetText = `${this.escapeHtml(m.target)}${m.port ? ':' + m.port : ''}`;
     const openUrl = this.buildMonitorOpenUrl(m);
+    const attribute = value => this.escapeHtml(value).replace(/"/g, '&quot;');
     const targetHtml = openUrl
-      ? `<a class="monitor-target monitor-target-link" href="${this.escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer" title="打开 ${this.escapeHtml(openUrl)}">${targetText}</a>`
-      : `<span class="monitor-target">${targetText}</span>`;
+      ? `<a class="monitor-target monitor-target-link" href="${attribute(openUrl)}" target="_blank" rel="noopener noreferrer" title="打开 ${attribute(openUrl)}">${targetText}</a>`
+      : `<span class="monitor-target" title="${targetText.replace(/"/g, '&quot;')}">${targetText}</span>`;
 
     return `
-      <article class="monitor-item ${m.maintenance?.active && !isPaused ? 'maintenance' : m.status}${isPaused ? ' paused' : ''}" data-id="${m.id}" tabindex="0" aria-label="查看 ${this.escapeHtml(m.name).replace(/"/g, '&quot;')} 的监控详情">
-        <div class="monitor-status"></div>
+      <article class="monitor-item ${this.monitorState(m)}" data-id="${m.id}" tabindex="0" aria-label="查看 ${this.escapeHtml(m.name).replace(/"/g, '&quot;')} 的监控详情">
         <div class="monitor-info">
-          <div class="monitor-name">${this.escapeHtml(m.name)}</div>
+          <div class="monitor-heading"><span class="monitor-status" aria-hidden="true"></span><div class="monitor-name" title="${attribute(m.name)}">${this.escapeHtml(m.name)}</div><span class="monitor-state-label">${ui.statusLabel(m)}</span></div>
           <div class="monitor-meta">
             <span class="monitor-type">${m.type.toUpperCase()}</span>
             ${targetHtml}
           </div>
         </div>
-        <span class="monitor-state-label">${ui.statusLabel(m)}</span>
         <div class="monitor-stats">
           <div class="monitor-stat monitor-stat-response-time">
             <span class="monitor-stat-value">${ui.formatResponseTime(m.last_response_time)}</span>
             <span class="monitor-stat-label" title="最近一次检测的响应时间">最新延迟</span>
           </div>
+          ${ui.renderResponseStats(m)}
           <div class="monitor-stat monitor-stat-uptime">
             <span class="monitor-stat-value">${m.uptime_24h !== null && m.uptime_24h !== undefined ? m.uptime_24h.toFixed(2) + '%' : '—'}</span>
             <span class="monitor-stat-label">24小时可用率</span>
           </div>
-          ${ui.renderResponseStats(m)}
         </div>
-        <div class="monitor-secondary-stats">
-          <div class="monitor-secondary-stat">
-            <span class="monitor-secondary-label">${icons.ssl} SSL 证书</span>
-            <span class="monitor-secondary-value">${m.ssl_days_remaining == null ? '—' : m.ssl_days_remaining > 0 ? '剩余 ' + m.ssl_days_remaining + ' 天' : m.ssl_days_remaining === 0 ? '已过期' : '已过期 ' + Math.abs(m.ssl_days_remaining) + ' 天'}</span>
-          </div>
-          <div class="monitor-secondary-stat">
-            <span class="monitor-secondary-label">${icons.lastCheck} 最后检测</span>
-            <span class="monitor-secondary-value">${m.last_check ? this.formatFullTime(m.last_check) : '—'}</span>
-          </div>
-        </div>
-        ${statusBarHtml}
-        <div class="monitor-timeline-label"><span>24 小时前</span><span>现在</span></div>
-        <div class="monitor-bottom"><span class="monitor-interval">${ui.icon('clock')}${isPaused ? '检测已暂停' : `每 ${m.interval_seconds} 秒检测`}</span><div class="monitor-actions">
-          <button type="button" class="btn-icon${isPaused ? ' paused' : ''}" data-ui-write data-action="toggleMonitor" data-id="${m.id}" title="${pauseTitle}">
+        <div class="monitor-history">${statusBarHtml}<div class="monitor-timeline-label"><span>24 小时前</span><span>现在</span></div></div>
+        <div class="monitor-actions" role="group" aria-label="监控操作">
+          <button type="button" class="btn-icon${isPaused ? ' paused' : ''}" data-ui-write data-action="toggleMonitor" data-id="${m.id}" title="${pauseTitle}" aria-label="${pauseTitle}">
             ${pauseIcon}
           </button>
-          <button type="button" class="btn-icon btn-icon-refresh" data-ui-write data-action="checkNow" data-id="${m.id}" title="立即检测">
+          <button type="button" class="btn-icon btn-icon-refresh" data-ui-write data-action="checkNow" data-id="${m.id}" title="立即检测" aria-label="立即检测">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M23 4v6h-6M1 20v-6h6"/>
               <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
             </svg>
           </button>
-          <button type="button" class="btn-icon" data-action="showHistory" data-id="${m.id}" title="查看历史">
+          <button type="button" class="btn-icon" data-action="showHistory" data-id="${m.id}" title="查看历史" aria-label="查看历史">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"/>
               <polyline points="12 6 12 12 16 14"/>
             </svg>
           </button>
-          <button type="button" class="btn-icon" data-action="editMonitor" data-id="${m.id}" title="编辑">
+          <button type="button" class="btn-icon" data-action="editMonitor" data-id="${m.id}" title="编辑" aria-label="编辑">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
               <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
             </svg>
           </button>
-          <button type="button" class="btn-icon danger" data-ui-write data-action="deleteMonitor" data-id="${m.id}" title="删除">
+          <button type="button" class="btn-icon" data-ui-write data-action="copyMonitor" data-id="${m.id}" title="复制监控" aria-label="复制监控">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <rect x="8" y="8" width="12" height="12" rx="2"/>
+              <path d="M16 8V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h4"/>
+            </svg>
+          </button>
+          <button type="button" class="btn-icon danger" data-ui-write data-action="deleteMonitor" data-id="${m.id}" title="删除" aria-label="删除">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="3 6 5 6 21 6"/>
               <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
             </svg>
           </button>
-        </div></div>
+        </div>
       </article>
     `;
   },
@@ -1405,16 +1550,22 @@ const app = {
   toggleGroup(groupId) {
     const section = document.querySelector(`.group-section[data-group-id="${groupId}"]`);
     if (section) {
+      const positions = this.captureOverviewPositions();
       const collapsed = section.classList.toggle('collapsed');
       if (collapsed) this.collapsedGroups.add(String(groupId));
       else this.collapsedGroups.delete(String(groupId));
       section.querySelector('.group-header').setAttribute('aria-expanded', String(!collapsed));
       section.querySelector('.group-body').inert = collapsed;
+      if (collapsed && section.querySelector('.group-body').contains(document.activeElement)) {
+        section.querySelector('.group-header').focus({preventScroll: true});
+      }
+      if (positions) this.animateOverview(positions);
     }
   },
 
-  showAddModal() {
+  showAddModal(groupId = null) {
     if (!ui.runtime.guardWrite()) return;
+    if (!this.beginMonitorForm('edit')) return;
     this.editingId = null;
     document.getElementById('modal-title').innerHTML = `<span class="modal-icon">${icons.add}</span> 添加监控`;
     form('monitor-form').reset();
@@ -1422,14 +1573,18 @@ const app = {
     input('monitor-timeout').value = '10';
     input('monitor-retries').value = '0';
     input('monitor-expected-status').value = '200';
-    input('monitor-group').value = '';
     input('monitor-is-public').checked = false;
     input('monitor-email-notification').checked = false;
     input('monitor-webhook-notification').checked = false;
     input('monitor-feishu-notification').checked = false;
     this.updateGroupSelect();
+    input('monitor-group').value = this.groups.some(group => String(group.id) === String(groupId)) ? String(groupId) : '';
+    input('monitor-auth-password').placeholder = '密码';
+    input('monitor-auth-password').removeAttribute('aria-describedby');
+    byId('monitor-copy-password-hint').hidden = true;
     this.togglePortField();
     document.getElementById('monitor-modal').classList.add('active');
+    ui.syncDialogs();
   },
 
   // ============ 分组管理 ============
@@ -1932,42 +2087,88 @@ const app = {
   editMonitor(id) {
     const monitor = this.monitors.find(m => m.id === id);
     if (!monitor) return;
+    if (!this.beginMonitorForm(ui.runtime.canWrite() ? 'edit' : 'view')) return;
 
     // 保留详情弹窗，不关闭
 
     this.editingId = id;
-    this.updateGroupSelect();
     document.getElementById('modal-title').innerHTML = `<span class="modal-icon">${icons.edit}</span> ${ui.runtime.canWrite() ? '编辑监控' : '查看监控配置'}`;
+    this.fillMonitorForm(monitor);
     input('monitor-id').value = String(id);
+    input('monitor-auth-password').placeholder = monitor.auth_password_set === true || monitor.auth_password_set === 1
+      ? '已设置（留空不修改）' : '（可选）';
+    this.togglePortField();
+    document.getElementById('monitor-modal').classList.add('active');
+    ui.syncDialogs();
+  },
+
+  copyMonitor(id) {
+    if (!ui.runtime.guardWrite()) return;
+    const monitor = this.monitors.find(m => m.id === id);
+    if (!monitor) return;
+    if (!this.beginMonitorForm('edit')) return;
+    this.editingId = null;
+    this.fillMonitorForm(monitor);
+    input('monitor-name').value = `${monitor.name}（副本）`;
+    input('monitor-auth-password').placeholder = '密码';
+    const hasPassword = monitor.auth_password_set === true || monitor.auth_password_set === 1;
+    byId('monitor-copy-password-hint').hidden = !hasPassword;
+    if (hasPassword) input('monitor-auth-password').setAttribute('aria-describedby', 'monitor-copy-password-hint');
+    document.getElementById('modal-title').innerHTML = `<span class="modal-icon">${icons.add}</span> 复制监控`;
+    this.togglePortField();
+    document.getElementById('monitor-modal').classList.add('active');
+    ui.syncDialogs();
+  },
+
+  fillMonitorForm(monitor) {
+    form('monitor-form').reset();
+    this.updateGroupSelect();
+    input('monitor-id').value = '';
     input('monitor-name').value = monitor.name;
     input('monitor-type').value = monitor.type;
     input('monitor-target').value = monitor.target;
-    input('monitor-port').value = monitor.port || '';
-    input('monitor-interval').value = String(monitor.interval_seconds);
-    input('monitor-timeout').value = String(monitor.timeout_seconds || 10);
-    input('monitor-retries').value = String(monitor.retries || 0);
-    input('monitor-expected-status').value = String(monitor.expected_status || 200);
-    input('monitor-group').value = monitor.group_id ? String(monitor.group_id) : '';
+    input('monitor-port').value = monitor.port ?? '';
+    input('monitor-interval').value = String(monitor.interval_seconds ?? 60);
+    input('monitor-timeout').value = String(monitor.timeout_seconds ?? 10);
+    input('monitor-retries').value = String(monitor.retries ?? 0);
+    input('monitor-expected-status').value = String(monitor.expected_status ?? 200);
+    input('monitor-group').value = this.groups.some(group => String(group.id) === String(monitor.group_id)) ? String(monitor.group_id) : '';
     input('monitor-is-public').checked = monitor.is_public === 1 || monitor.is_public === true;
     input('monitor-email-notification').checked = monitor.email_notification === 1 || monitor.email_notification === true;
     input('monitor-webhook-notification').checked = monitor.webhook_notification === 1 || monitor.webhook_notification === true;
     input('monitor-feishu-notification').checked = monitor.feishu_notification === 1 || monitor.feishu_notification === true;
     input('monitor-auth-username').value = monitor.auth_username || '';
-    const pwdInput = document.getElementById('monitor-auth-password');
-    if (pwdInput) {
-      // 不回填敏感密码
-      pwdInput.value = '';
-      const hasPwd = monitor.auth_password_set === true || monitor.auth_password_set === 1;
-      pwdInput.placeholder = hasPwd ? '已设置（留空不修改）' : '（可选）';
-    }
-
-    this.togglePortField();
-    document.getElementById('monitor-modal').classList.add('active');
+    // 编辑和复制均不回填敏感密码；编辑留空时的保留行为由 saveMonitor 处理。
+    input('monitor-auth-password').value = '';
+    input('monitor-auth-password').removeAttribute('aria-describedby');
+    byId('monitor-copy-password-hint').hidden = true;
   },
 
-  closeModal() {
+  beginMonitorForm(mode) {
+    if (this.monitorSaving) return false;
+    this.monitorFormSession++;
+    this.monitorFormMode = mode;
+    ui.dialogDismiss.reset(byId('monitor-modal'));
+    return true;
+  },
+
+  setMonitorSaving(saving) {
+    this.monitorSaving = saving;
+    form('monitor-form').setAttribute('aria-busy', String(saving));
+    byId('monitor-modal').querySelectorAll('button[type="submit"], .btn-close').forEach(button => {button.disabled = saving;});
+    ui.runtime.apply();
+  },
+
+  closeModal(force = false) {
+    if (!force) return ui.dialogDismiss.request('monitor-modal');
+    ui.dialogDismiss.reset(byId('monitor-modal'));
     document.getElementById('monitor-modal').classList.remove('active');
     this.editingId = null;
+    this.monitorFormSession++;
+    this.monitorSaveController?.abort();
+    this.monitorSaveController = null;
+    this.setMonitorSaving(false);
+    ui.syncDialogs();
   },
 
   togglePortField() {
@@ -1999,6 +2200,7 @@ const app = {
   async saveMonitor(e) {
     if (!ui.runtime.guardWrite(e)) return;
     e.preventDefault();
+    if (this.monitorSaving) return;
 
     const type = input('monitor-type').value;
     const groupId = input('monitor-group').value;
@@ -2028,16 +2230,24 @@ const app = {
       }
     }
 
+    const sequence = this.monitorFormSession;
+    const editingId = this.editingId;
+    const controller = new AbortController();
+    this.monitorSaveController = controller;
+    this.setMonitorSaving(true);
     try {
-      const isEdit = !!this.editingId;
-      const url = isEdit ? `/api/monitors/${this.editingId}` : '/api/monitors';
+      const isEdit = !!editingId;
+      const url = isEdit ? `/api/monitors/${editingId}` : '/api/monitors';
       const method = isEdit ? 'PUT' : 'POST';
 
       const response = await fetch(url, {
         method,
+        signal: controller.signal,
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(data)
       });
+
+      if (sequence !== this.monitorFormSession || controller.signal.aborted) return;
 
       if (response.status === 401) {
         auth.showLogin();
@@ -2046,15 +2256,17 @@ const app = {
 
       if (!response.ok) {
         const error = await response.json();
+        if (sequence !== this.monitorFormSession || controller.signal.aborted) return;
         this.showToast(error.error || '保存失败', 'error');
         return;
       }
 
       const savedMonitor = await response.json();
-      const monitorId = savedMonitor.id || this.editingId;
+      if (sequence !== this.monitorFormSession || controller.signal.aborted) return;
+      const monitorId = savedMonitor.id || editingId;
 
       this.showToast(isEdit ? '监控已更新' : '监控已添加', 'success');
-      this.closeModal();
+      this.closeModal(true);
 
       // 重新加载列表和统计
       await this.loadMonitors();
@@ -2080,7 +2292,12 @@ const app = {
         }, 300);
       }
     } catch (error) {
-      this.showToast(error.message, 'error');
+      if (sequence === this.monitorFormSession && !controller.signal.aborted) this.showToast(error.message, 'error');
+    } finally {
+      if (sequence === this.monitorFormSession) {
+        this.monitorSaveController = null;
+        this.setMonitorSaving(false);
+      }
     }
   },
 
@@ -2607,6 +2824,7 @@ const app = {
   },
 
   closeDetailModal() {
+    ui.dialogDismiss.reset(byId('detail-modal'));
     document.getElementById('detail-modal').classList.remove('active');
     this.currentDetailId = null;
     this.resetDetailData();
@@ -3401,6 +3619,8 @@ const app = {
         return;
       }
 
+      const settings = await response.json();
+
       // 如果更新了密码，清空密码字段
       if (adminPassword) {
         input('admin-password-settings').value = '';
@@ -3408,7 +3628,8 @@ const app = {
       }
 
       // 更新显示
-      const settings = await response.json();
+      input('public-page-title').value = settings.publicPageTitle || '服务状态监控';
+      input('log-retention-days').value = String(settings.logRetentionDays || 30);
       const adminSection = document.getElementById('settings-section-admin');
       if (adminSection) {
         const adminEmailInput = asInput(adminSection.querySelector('#admin-email-settings'));
@@ -3443,11 +3664,7 @@ const app = {
         feishuSecretInput.placeholder = settings.feishuSecretSet ? '已设置（留空不修改）' : '机器人安全设置中的签名密钥';
       }
 
-      // 保存成功后刷新页面以应用新设置
-      this.showToast('设置已保存，页面即将刷新...', 'success');
-      setTimeout(() => {
-        location.reload();
-      }, 1000);
+      this.showToast('设置已保存', 'success');
     } catch (error) {
       this.showToast(error.message || '保存设置失败', 'error');
     }

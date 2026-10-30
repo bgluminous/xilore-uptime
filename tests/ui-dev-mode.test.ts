@@ -138,7 +138,7 @@ await test('前端函数在模式未确认和只读时均不发请求、不改�
   await app.normalizeGroupOrder();
   await app.updateGroupOrderFromDOM(1, 1);
   assert.equal(JSON.stringify(app.groups), original);
-  for (const method of ['showAddModal', 'editGroupName', 'deleteGroup', 'toggleMonitor', 'deleteMonitor', 'checkNow', 'refreshAll',
+  for (const method of ['showAddModal', 'copyMonitor', 'editGroupName', 'deleteGroup', 'toggleMonitor', 'deleteMonitor', 'checkNow', 'refreshAll',
     'clearHistory', 'deleteHistoryRecord', 'testEmail', 'testWebhook', 'testFeishu', 'clearCurrentSettingsConfig',
     'clearEmailConfig', 'clearWebhookConfig', 'clearFeishuConfig', 'deleteAllHistory']) await app[method](1);
   for (const method of ['saveMonitor', 'saveSettings', 'addGroup']) {

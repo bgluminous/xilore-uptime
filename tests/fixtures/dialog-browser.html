@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>浮窗关闭浏览器验收</title>
+<style>
+  body { margin: 16px; font: 14px system-ui; color: #20352e; background: #f3f6f4; }
+  button { padding: 10px 16px; cursor: pointer; }
+  pre { white-space: pre-wrap; }
+  iframe { display: block; width: 1440px; height: 900px; border: 1px solid #bbc8c1; }
+</style>
+<h1>浮窗关闭 · 隔离浏览器验收</h1>
+<p>在下方登录合成账号后运行。写请求仅在此 iframe 内存中模拟，刷新恢复只读。</p>
+<button id="run" type="button">运行浮窗验收</button>
+<button id="manual" type="button">交互预览</button>
+<button id="readonly" type="button" disabled>切换只读</button>
+<button id="delay" type="button" disabled>延迟下次保存</button>
+<button id="resolve" type="button" disabled>完成保存</button>
+<button id="reject" type="button" disabled>保存失败</button>
+<pre id="results" role="status">等待运行</pre>
+<iframe id="preview" src="/manage" title="隔离的浮窗预览"></iframe>
+<script type="module">
+  const frame = document.getElementById('preview'), output = document.getElementById('results');
+  const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const assert = (value, message) => { if (!value) throw new Error(message); };
+  const until = async (check, message) => {
+    const deadline = performance.now() + 5000;
+    while (!check() && performance.now() < deadline) await pause(20);
+    assert(check(), message);
+  };
+  function sandbox() {
+    const win = frame.contentWindow, doc = frame.contentDocument;
+    const app = win.eval('app'), ui = win.eval('ui'), comm = win.eval('communications');
+    assert(app.hasLoadedMonitors, '请先登录并等待合成监控加载');
+    clearInterval(app.refreshInterval);
+    const originalFetch = win.fetch, errors = [], writes = [], pending = [];
+    let delayed = false;
+    win.addEventListener('error', event => errors.push(event.message));
+    win.addEventListener('unhandledrejection', event => errors.push(String(event.reason)));
+    const rows = {
+      announcements: [{id: 1, title: '合成公告', body: '浏览器验收内容', state: 'draft', revision: 1, channels: []}],
+      maintenances: ['scheduled', 'active', 'completed', 'cancelled'].map((state, index) => ({
+        id: index + 1, title: `合成维护 ${state}`, body: '维护说明', state, revision: 1,
+        starts_at: new Date(Date.now() + 3600000).toISOString(), ends_at: new Date(Date.now() + 7200000).toISOString(),
+        channels: [], monitors: [{id: 1, name: 'API'}], continue_checks: true, suppress_alerts: true, exclude_stats: true
+      }))
+    };
+    const json = (data, status = 200) => new win.Response(JSON.stringify(data), {status});
+    win.fetch = async (url, options = {}) => {
+      const route = new URL(String(url), win.location.href).pathname, method = options.method || 'GET';
+      const kind = route.split('/')[2];
+      if (method === 'GET' && rows[kind]) return json({items: rows[kind], page: 1, has_more: false});
+      if (method === 'GET' || route === '/api/content/preview') return originalFetch.call(win, url, options);
+      writes.push({route, method, body: options.body && JSON.parse(options.body)});
+      const success = () => json({...JSON.parse(options.body || '{}'), id: 999, enabled: 0}, 201);
+      // 故意不处理 abort，验证已经抵达但迟到的响应也无法影响新会话。
+      if (delayed) {
+        delayed = false;
+        return new Promise(resolve => pending.push(ok => resolve(ok ? success() : json({error: '模拟保存失败'}, 500))));
+      }
+      return success();
+    };
+    const mode = readOnly => {ui.runtime.uiDevMode = readOnly; ui.runtime.apply();};
+    mode(false);
+    const pointer = (element, type, pointerType = 'mouse') => element.dispatchEvent(new win.PointerEvent(type,
+      {bubbles: true, cancelable: true, button: 0, pointerId: 7, isPrimary: true, pointerType}));
+    const backdrop = (overlay, pointerType) => {
+      pointer(overlay, 'pointerdown', pointerType); pointer(overlay, 'pointerup', pointerType); pointer(overlay, 'click', pointerType);
+    };
+    const key = (key, target = doc.activeElement) => target.dispatchEvent(new win.KeyboardEvent('keydown', {key, bubbles: true, cancelable: true}));
+    const field = id => doc.getElementById(id), active = id => field(id).classList.contains('active');
+    const hint = () => doc.querySelector('.dialog-dismiss-hint.is-visible')?.textContent.trim();
+    const clean = async () => {
+      ui.pendingConfirmation?.(); app.closeModal(true); app.closeDetailModal();
+      comm.closeEditor('announcements', true); comm.closeEditor('maintenances', true);
+      await pause(0);
+    };
+    const fill = () => {field('monitor-name').value = '保存会话验证'; field('monitor-target').value = 'https://example.invalid';};
+    return {win, doc, app, ui, comm, rows, errors, writes, mode, pointer, backdrop, key, field, active, hint, clean, fill,
+      delay: () => {delayed = true;}, resolve: (ok = true) => {assert(pending.length, '没有待返回的保存'); pending.shift()(ok);},
+      restore: async () => {await clean(); win.fetch = originalFetch; mode(true);}};
+  }
+  document.getElementById('manual').onclick = () => {
+    try {
+      const s = sandbox(); frame.style.width = '100%';
+      document.getElementById('run').disabled = document.getElementById('manual').disabled = true;
+      for (const id of ['readonly', 'delay', 'resolve', 'reject']) document.getElementById(id).disabled = false;
+      document.getElementById('readonly').onclick = () => s.mode(!s.ui.runtime.uiDevMode);
+      document.getElementById('delay').onclick = s.delay;
+      document.getElementById('resolve').onclick = () => s.resolve();
+      document.getElementById('reject').onclick = () => s.resolve(false);
+      output.textContent = '合成可写预览已开启；所有保存均在浏览器内存中模拟。';
+    } catch (error) {output.textContent = error.message;}
+  };
+  document.getElementById('run').onclick = async () => {
+    const results = []; let s;
+    const test = async (name, run) => {await run(); results.push(name); output.textContent = results.map(x => '✓ ' + x).join('\n');};
+    document.getElementById('run').disabled = true;
+    try {
+      output.textContent = '运行中…';
+      s = sandbox();
+      const {win, doc, app, ui, comm, field, active, backdrop, pointer, key, hint} = s;
+      const overlay = field('monitor-modal');
+      await test('详情单击遮罩关闭，清理请求并恢复操作按钮焦点', async () => {
+        const trigger = doc.querySelector('[data-action="showHistory"]'); trigger.focus();
+        await app.showDetail(1); backdrop(field('detail-modal')); await pause(0);
+        assert(!active('detail-modal') && !app.currentDetailId && !app.detailRequestController, '详情未清理');
+        assert(doc.activeElement === trigger, '详情焦点未恢复');
+      });
+      await test('只读监控配置支持单击、Esc 和关闭按钮', async () => {
+        s.mode(true);
+        for (const close of [() => backdrop(overlay), () => key('Escape'), () => overlay.querySelector('.btn-close').click()]) {
+          app.editMonitor(1); await pause(0); assert(app.monitorFormMode === 'view', '只读模式分类');
+          close(); await pause(0); assert(!active('monitor-modal'), '查看配置不能直接关闭');
+        }
+        s.mode(false);
+      });
+      await test('新增/复制/编辑：鼠标与触屏两次点击，按钮直接关闭', async () => {
+        for (const open of [() => app.showAddModal(), () => app.copyMonitor(1), () => app.editMonitor(1)]) {
+          for (const pointerType of ['mouse', 'touch']) {
+            open(); await pause(0); const focus = doc.activeElement;
+            backdrop(overlay, pointerType);
+            assert(active('monitor-modal') && hint() === '再次点击关闭', '首次点击提示或模式错误');
+            assert(doc.activeElement === focus, '提示抢焦点');
+            backdrop(overlay, pointerType); assert(!active('monitor-modal'), '二次点击未关闭');
+          }
+          open(); await pause(0); overlay.querySelector('.btn-close').click();
+          assert(!active('monitor-modal'), '关闭按钮未直接关闭');
+        }
+      });
+      await test('超时后重新确认，输入/按键/表单内部点击都会重置', async () => {
+        app.showAddModal(); await pause(0); backdrop(overlay); await pause(2050);
+        assert(!hint(), '超时提示未清理'); backdrop(overlay); assert(active('monitor-modal'), '超时后误关');
+        for (const reset of [() => pointer(field('monitor-name'), 'pointerdown'), () => field('monitor-name').click(),
+          () => field('monitor-name').dispatchEvent(new win.Event('input', {bubbles: true})), () => key('a')]) {
+          reset(); assert(!hint() && !ui.dialogDismiss.armedUntil, '继续编辑没有重置');
+          backdrop(overlay); assert(active('monitor-modal'), '重置后首次点击误关');
+        }
+        app.closeModal();
+      });
+      await test('Esc 只提示且不启动确认；关闭再打开不继承计时', async () => {
+        app.showAddModal(); await pause(0); backdrop(overlay); key('Escape');
+        assert(active('monitor-modal') && hint() && !ui.dialogDismiss.armedUntil, 'Esc 关闭或启动确认');
+        backdrop(overlay); assert(active('monitor-modal'), 'Esc 之后首次点击误关');
+        app.closeModal(); app.showAddModal(); await pause(0); backdrop(overlay);
+        assert(active('monitor-modal'), '重新打开继承旧确认'); app.closeModal();
+      });
+      await test('表单拖到遮罩、遮罩拖到表单和取消触摸均不误关', async () => {
+        app.showAddModal(); await pause(0);
+        for (const type of ['mouse', 'touch']) {
+          pointer(field('monitor-name'), 'pointerdown', type); pointer(overlay, 'click', type);
+          assert(!hint(), '内部拖出触发确认');
+          pointer(overlay, 'pointerdown', type); pointer(field('monitor-name'), 'click', type);
+          assert(!hint(), '外部拖入触发确认');
+          pointer(overlay, 'pointerdown', type); pointer(overlay, 'pointercancel', type); pointer(overlay, 'click', type);
+          assert(!hint(), '触摸取消仍触发确认');
+        }
+        app.closeModal();
+      });
+      await test('确认框遮罩/Esc 取消；仅顶层响应，层级变化清理提示和焦点', async () => {
+        app.showAddModal(); await pause(0); backdrop(overlay);
+        const focus = doc.activeElement, pending = ui.confirm('合成确认');
+        assert(!hint() && overlay.inert, '上层打开未重置或隔离');
+        backdrop(overlay); assert(active('monitor-modal'), '底层响应遮罩');
+        key('Escape'); assert(await pending === false, 'Esc 未取消确认'); await pause(0);
+        assert(doc.activeElement === focus && !overlay.inert, '下一层焦点未恢复');
+        backdrop(overlay); assert(active('monitor-modal'), '层级变化后继承旧确认');
+        const next = ui.confirm('合成确认'); backdrop(field('confirmation-modal'));
+        assert(await next === false, '遮罩未取消确认');
+        const accept = ui.confirm('合成确认'); field('confirmation-modal').querySelector('[data-confirm="accept"]').click();
+        assert(await accept === true, '确认按钮失效'); app.closeModal();
+      });
+      await test('详情与编辑叠层：Tab 焦点循环、Esc 仅作用于顶层', async () => {
+        await app.showDetail(1); const edit = field('detail-modal').querySelector('[onclick*="editMonitor"]');
+        assert(edit, '缺少详情编辑入口'); edit.focus(); edit.click(); await pause(0);
+        const fields = ui.focusableElements(overlay); fields.at(-1).focus(); key('Tab');
+        assert(doc.activeElement === fields[0], 'Tab 未保持在浮窗内');
+        key('Escape'); assert(active('monitor-modal') && active('detail-modal'), 'Esc 穿透或关闭编辑');
+        app.closeModal(); assert(doc.activeElement === edit && active('detail-modal'), '编辑关闭后未返回详情');
+        key('Escape'); await pause(0); assert(!active('detail-modal') && !app.currentDetailId, '详情 Esc 未清理');
+      });
+      await test('公告和维护：可编辑、只读及已结束/取消历史的模式一致', async () => {
+        for (const kind of ['announcements', 'maintenances']) {
+          app.showWorkspaceView(kind);
+          const rows = [null, ...s.rows[kind]];
+          for (const readOnly of [false, true]) for (const row of rows) {
+            s.mode(readOnly); await comm.edit(kind, row); await pause(0);
+            const view = readOnly || ['completed', 'cancelled'].includes(row?.state), node = field(`${kind}-editor`);
+            assert(node.dataset.dialogMode === (view ? 'view' : 'edit'), '模式错误');
+            assert(field(`${kind}-title`).readOnly === view, '标题控件状态错误');
+            assert(node.querySelector('h2').textContent.startsWith(view ? '查看' : row ? '编辑' : '新建'), '标题与权限不同步');
+            assert([...node.querySelectorAll('button[type="submit"]')].every(b => !view || b.hidden), '只读保存入口未隐藏');
+            backdrop(node, 'touch'); assert(active(node.id) !== view, '触屏关闭策略错误');
+            if (!view) {key('Escape'); assert(active(node.id), '编辑 Esc 误关'); node.querySelector('[data-content-action="close"]').click();}
+            await pause(0);
+          }
+          s.mode(false);
+        }
+        app.showWorkspaceView('overview');
+      });
+      await test('提示位于视口上方居中，明暗主题及 1440/1024/390px 无溢出', async () => {
+        for (const theme of ['light', 'dark']) for (const width of [1440, 1024, 390]) {
+          frame.style.width = width + 'px'; ui.theme.set(theme); app.showAddModal(); await pause(320); backdrop(overlay); await pause(180);
+          const node = doc.querySelector('.dialog-dismiss-hint'), rect = node.getBoundingClientRect();
+          assert(rect.top >= 23 && rect.top <= 25 && Math.abs(rect.left + rect.width / 2 - doc.documentElement.clientWidth / 2) <= 1,
+            `提示位置 ${theme}/${width}: ${JSON.stringify(rect.toJSON())}, viewport=${doc.documentElement.clientWidth}`);
+          assert(node.getAttribute('role') === 'status' && node.getAttribute('aria-live') === 'polite', '缺少可访问播报');
+          assert(win.getComputedStyle(node).pointerEvents === 'none', '提示阻挡点击');
+          assert(doc.documentElement.scrollWidth <= width, '移动端横向溢出'); app.closeModal();
+        }
+        frame.style.width = '1440px';
+      });
+      await test('减少动态效果样式关闭提示过渡，无逐帧布局动画', async () => {
+        // 应用真实减少动态效果媒体规则的声明，独立于验收机器的系统偏好。
+        const rules = [...doc.styleSheets].flatMap(sheet => [...sheet.cssRules]).filter(rule =>
+          rule.conditionText === '(prefers-reduced-motion: reduce)');
+        assert(rules.length, '缺少减少动态效果样式');
+        const style = doc.createElement('style');
+        style.textContent = rules.flatMap(rule => [...rule.cssRules].map(item => item.cssText)).join('\n');
+        doc.head.append(style);
+        try {
+          app.showAddModal(); await pause(0); backdrop(overlay);
+          const computed = win.getComputedStyle(doc.querySelector('.dialog-dismiss-hint'));
+          assert(computed.transitionDuration.split(',').every(value => parseFloat(value) <= 0.00001), '提示仍有过渡');
+          app.closeModal();
+        } finally {style.remove();}
+      });
+      await test('监控保存中禁重复提交与关闭；失败保留填写，重试成功关闭', async () => {
+        app.showAddModal(); await pause(0); s.fill(); s.delay(); const before = s.writes.length;
+        const save = app.saveMonitor({preventDefault() {}}); app.saveMonitor({preventDefault() {}});
+        assert(s.writes.length === before + 1, '重复保存');
+        for (const close of [() => backdrop(overlay), () => key('Escape'), () => app.closeModal()]) {
+          close(); assert(active('monitor-modal') && hint() === '正在保存，请稍候。', '保存保护');
+        }
+        assert(field('monitor-form').getAttribute('aria-busy') === 'true', '保存状态播报');
+        s.resolve(false); await save; assert(active('monitor-modal') && !app.monitorSaving && field('monitor-name').value === '保存会话验证', '失败恢复');
+        await app.saveMonitor({preventDefault() {}}); assert(!active('monitor-modal'), '保存成功未关闭');
+      });
+      await test('强制结束旧会话后，迟到成功/失败响应都不影响新表单', async () => {
+        for (const success of [true, false]) {
+          app.showAddModal(); await pause(0); s.fill(); s.delay();
+          const saving = app.saveMonitor({preventDefault() {}}), signal = app.monitorSaveController.signal;
+          app.closeModal(true); app.showAddModal(); field('monitor-name').value = '新会话'; await pause(0);
+          s.resolve(success); await saving;
+          assert(signal.aborted && active('monitor-modal') && field('monitor-name').value === '新会话' && !app.monitorSaving, '旧响应污染新会话');
+          app.closeModal();
+        }
+      });
+      await test('公告/维护保存期间关闭保护，失败恢复与成功退出', async () => {
+        for (const kind of ['announcements', 'maintenances']) {
+          app.showWorkspaceView(kind); await comm.edit(kind, s.rows[kind][0]); s.delay();
+          const saving = comm.save(kind); await until(() => comm.savingEditor === kind, '未进入保存');
+          const node = field(`${kind}-editor`); backdrop(node); key('Escape'); comm.closeEditor(kind);
+          assert(active(node.id) && hint() === '正在保存，请稍候。', '内容保存未保护');
+          s.resolve(false); await saving; assert(active(node.id) && !comm.saving, '内容失败未恢复');
+          await comm.save(kind); assert(!active(node.id), '内容成功未退出');
+        }
+      });
+      await test('无脚本错误或未处理拒绝', async () => {await pause(350); assert(!s.errors.length, s.errors.join('\n'));});
+      output.textContent = JSON.stringify({passed: results.length, checks: results}, null, 2);
+    } catch (error) {output.textContent = JSON.stringify({passed: results.length, checks: results, error: error.stack}, null, 2);}
+    finally {if (s) {await s.restore(); s.app.showWorkspaceView('overview');} document.getElementById('run').disabled = false;}
+  };
+</script>
+</html>

@@ -11,8 +11,9 @@ import bcrypt from 'bcryptjs';
 const scenario = process.argv[2] || 'readonly';
 const originalNow = Date.now;
 const fixtureEnd = Date.now();
-const groupScenario = scenario === 'group-status' || scenario === 'preview-groups';
-const isPreview = scenario === 'preview' || scenario === 'preview-groups';
+const overviewScenario = scenario === 'preview-overview';
+const groupScenario = scenario === 'group-status' || scenario === 'preview-groups' || overviewScenario;
+const isPreview = scenario === 'preview' || scenario === 'preview-groups' || overviewScenario;
 const withHistory = scenario === 'response-stats' || isPreview || groupScenario;
 if (scenario === 'response-stats') Date.now = () => fixtureEnd;
 const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'uptime-ui-dev-'));
@@ -55,6 +56,13 @@ const historyRecord = (id: number, monitorId: number, response: number | null, a
   id, monitor_id: monitorId, response_time: response, checked_at: new Date(fixtureEnd - ago),
   status: response === null ? 'down' : 'up', message: response === null ? '请求超时' : '检测成功'
 });
+if (overviewScenario) {
+  for (let id = 9; id <= 200; id++) monitors.push({...monitor, id, group_id: (id % 3) + 1,
+    name: id === 20 ? 'Service 020 超长服务名称用于验证截断及完整提示'.repeat(3) : `Service ${String(id).padStart(3, '0')}`,
+    target: id === 20 ? 'https://example.invalid/' + 'long-path/'.repeat(12) : monitor.target,
+    status: id % 11 === 0 ? 'down' : id % 7 === 0 ? 'warning' : 'up',
+    enabled: id % 23 === 0 ? 0 : 1});
+}
 const history = withHistory ? [
   ...Array.from({length: 200}, (_, i) => historyRecord(i + 1, 1, i + 1, 60000 + i * 10000)),
   ...[2, 8, 18, 48, 240].map((hours, i) => historyRecord(201 + i, 1, 400 * 2 ** i, hours * 3600000)),
@@ -219,11 +227,24 @@ try {
     assert(address && typeof address === 'object');
     const baseUrl = `http://127.0.0.1:${address.port}`;
     if (isPreview) {
+      if (overviewScenario) {
+        // 仅隔离验收服务器暴露测试页面，生产路由与 public 目录不包含测试代码。
+        const handler = server.listeners('request')[0] as (request: any, response: any) => void;
+        server.removeAllListeners('request');
+        server.on('request', (request, response) => {
+          if (request.url === '/__overview-test' || request.url === '/__dialog-test') {
+            response.setHeader('Content-Type', 'text/html; charset=utf-8');
+            response.end(fs.readFileSync(new URL(request.url === '/__dialog-test'
+              ? './dialog-browser.html' : './overview-browser.html', import.meta.url)));
+          } else handler(request, response);
+        });
+      }
       console.log(`UI_PREVIEW_URL=${baseUrl}`);
       console.log('合成数据账号：preview / preview-only');
       // 只影响合成预览，供浏览器验证失败重试和迟到响应；不增加应用接口。
-      console.log('预览命令：fail-next-history / delay-next-history / statusbars-off / statusbars-on / recover-services / fail-service / stop');
+      console.log('预览命令：fail-next-history / delay-next-history / statusbars-off / statusbars-on / recover-services / fail-service / empty-monitors / restore-monitors / stop');
       const controls = createInterface({input: process.stdin, terminal: false});
+      const previewMonitors = [...monitors];
       await new Promise<void>(resolve => {
         process.once('SIGINT', resolve);
         process.once('SIGTERM', resolve);
@@ -232,6 +253,8 @@ try {
           if (command === 'delay-next-history') delayNextHistory = true;
           if (command === 'statusbars-off') statusBarsUnavailable = true;
           if (command === 'statusbars-on') statusBarsUnavailable = false;
+          if (command === 'empty-monitors') monitors.length = 0;
+          if (command === 'restore-monitors') monitors.splice(0, monitors.length, ...previewMonitors);
           if (groupScenario && command === 'recover-services') {
             for (const item of monitors.filter(row => row.id === 2 || row.id === 4)) item.status = 'up';
           }

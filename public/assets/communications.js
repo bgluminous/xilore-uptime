@@ -7,7 +7,7 @@ const communications = {
   requests: {},
   previewRequests: {},
   editRequests: {},
-  closeArmed: {},
+  viewFields: new WeakMap(),
   editorTriggers: {},
   savingEditor: null,
   publicPages: {},
@@ -47,7 +47,7 @@ const communications = {
           <div class="modal-header"><h2 id="${kind}-editor-title">新建${maintenance ? '维护' : '公告'}</h2>
             <button class="btn-close" type="button" data-content-action="close" aria-label="关闭${maintenance ? '维护' : '公告'}编辑"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
           <div class="content-editor-body">
-          <p id="${kind}-editor-help" class="content-muted content-editor-help">通过关闭按钮退出；点击浮窗外会先提示，再点一次才关闭。</p>
+          <p id="${kind}-editor-help" class="content-muted content-editor-help"></p>
           <label class="content-field">标题<input id="${kind}-title" name="title" type="text" required maxlength="200"></label>
           <div class="content-editor-columns"><label class="content-field">${maintenance ? '维护说明' : '公告正文'} · Markdown
             <textarea id="${kind}-body" name="body" rows="8" maxlength="20000" placeholder="支持标题、列表、链接和代码"></textarea></label>
@@ -66,7 +66,6 @@ const communications = {
           </div>
           <div class="content-editor-footer">
           <div id="${kind}-editor-error" class="content-error" role="alert" tabindex="-1" hidden></div>
-          <p id="${kind}-close-hint" class="content-close-hint" role="status" aria-live="polite" hidden></p>
           <div class="content-editor-actions"><button class="btn-secondary" type="button" data-content-action="close">关闭</button>
             <button class="btn-primary" type="submit" data-ui-write>保存</button>
             ${!maintenance ? '<button class="btn-secondary" type="submit" name="publish" value="1" data-ui-write>保存并发布</button>' : ''}
@@ -94,26 +93,10 @@ const communications = {
       };
       root.addEventListener('click', onAction);
       overlay.addEventListener('click', onAction);
-      let backdropPointer = false;
-      overlay.addEventListener('pointerdown', event => {
-        backdropPointer = event.target === overlay && event.button === 0 && event.isPrimary;
-        if (event.target !== overlay) this.resetCloseHint(kind);
-      });
-      overlay.addEventListener('pointercancel', () => {backdropPointer = false;});
-      overlay.addEventListener('click', event => {
-        // 从表单内拖到遮罩的松手事件不计作关闭操作。
-        const outside = backdropPointer && event.target === overlay;
-        backdropPointer = false;
-        if (outside) this.requestBackdropClose(kind);
-      });
-      overlay.addEventListener('input', () => this.resetCloseHint(kind));
-      overlay.addEventListener('keydown', event => {
-        this.resetCloseHint(kind);
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          event.stopPropagation();
-          this.closeHint(kind, '请点击关闭按钮退出；未保存的内容不会保留。');
-        }
+      ui.dialogDismiss.bind(overlay, {
+        mode: () => overlay.dataset.dialogMode,
+        busy: () => this.savingEditor === kind,
+        close: () => this.closeEditor(kind, true)
       });
       form(`${kind}-form`).addEventListener('submit', event => {event.preventDefault(); this.save(kind, event.submitter);});
       byId(`${kind}-filter`).addEventListener('change', () => {this.pages[kind] = 1; this.load(kind);});
@@ -132,36 +115,33 @@ const communications = {
     element.hidden = !message;
     if (message && byId(`${kind}-editor`).classList.contains('active')) element.focus({preventScroll: true});
   },
-  closeHint(kind, message) {
-    const hint = byId(`${kind}-close-hint`);
-    hint.textContent = message;
-    hint.hidden = !message;
+  canEdit(kind, row) {
+    return ui.runtime.canWrite() && !(kind === 'maintenances' && row && ['completed', 'cancelled'].includes(row.state));
   },
-  resetCloseHint(kind) {
-    this.closeArmed[kind] = false;
-    this.closeHint(kind, '');
-  },
-  requestBackdropClose(kind) {
-    if (this.savingEditor === kind) {
-      this.closeHint(kind, '正在保存，请稍候。');
-      return;
-    }
-    if (this.closeArmed[kind]) this.closeEditor(kind);
-    else {
-      this.closeArmed[kind] = true;
-      this.closeHint(kind, '再次点击浮窗外将关闭，未保存的内容会丢失。继续编辑可取消关闭。');
-      form(`${kind}-form`).focus({preventScroll: true});
-    }
+  setEditorReadOnly(kind, readOnly) {
+    form(`${kind}-form`).querySelectorAll('input, textarea, select').forEach(field => {
+      if (readOnly) {
+        if (!this.viewFields.has(field)) this.viewFields.set(field, {disabled: field.disabled, readOnly: field.readOnly});
+        if (field instanceof HTMLTextAreaElement || (field instanceof HTMLInputElement && !['checkbox', 'radio'].includes(field.type))) field.readOnly = true;
+        else field.disabled = true;
+      } else {
+        const previous = this.viewFields.get(field);
+        if (!previous) return;
+        field.disabled = previous.disabled;
+        if ('readOnly' in field) field.readOnly = previous.readOnly;
+        this.viewFields.delete(field);
+      }
+    });
   },
   closeEditor(kind, force = false) {
-    if (!force && this.savingEditor === kind) return;
+    if (!force) return ui.dialogDismiss.request(`${kind}-editor`);
     const overlay = byId(`${kind}-editor`);
     const wasOpen = overlay.classList.contains('active');
     overlay.classList.remove('active');
     this.editRequests[kind] = (this.editRequests[kind] || 0) + 1;
     this.previewRequests[kind] = (this.previewRequests[kind] || 0) + 1;
     this.editing[kind] = null;
-    this.resetCloseHint(kind);
+    ui.dialogDismiss.reset(overlay);
     this.editorError(kind);
     ui.syncDialogs();
     // 列表自动刷新可能替换原来的编辑按钮，此时回到该工作区的新建按钮。
@@ -213,7 +193,7 @@ const communications = {
       <h3>${e(row.title)}</h3><p class="content-meta">${maintenance ? `${e(this.time(row.starts_at))} → ${e(this.time(row.ends_at))}` : row.published_at ? e(this.time(row.published_at)) : '尚未发布'}</p>
       ${maintenance ? `<p class="content-meta">影响服务：${(row.monitors || []).map(monitor => e(monitor.name)).join('、') || '关联服务已删除'}</p>` : ''}
       <details data-content-id="${row.id}"><summary>查看${maintenance ? '维护说明' : '公告内容'}</summary><div class="markdown-content">${row.body_html || '<p>暂无补充说明。</p>'}</div></details>
-      ${manage ? `<div class="content-actions">${action('edit', ui.runtime.canWrite() ? '编辑' : '查看配置', false)}
+      ${manage ? `<div class="content-actions">${action('edit', this.canEdit(kind, row) ? '编辑' : '查看配置', false)}
         ${maintenance ? (row.state === 'scheduled' ? action('cancel', '取消预约') : row.state === 'active' ? action('finish', '结束维护') : '')
           : (row.state !== 'published' ? action('publish', '发布') : action('withdraw', '撤回') + action('archive', '归档')) +
             action('pin', row.pinned ? '取消置顶' : '置顶') + (row.state === 'draft' ? action('delete', '删除草稿') : '')}</div>
@@ -234,19 +214,25 @@ const communications = {
     this.editRequests[kind] = sequence;
     this.previewRequests[kind] = (this.previewRequests[kind] || 0) + 1;
     const editor = form(`${kind}-form`);
+    this.setEditorReadOnly(kind, false);
     editor.reset();
     this.editing[kind] = row ? {...row} : null;
     this.error(kind);
     this.editorError(kind);
-    this.resetCloseHint(kind);
+    ui.dialogDismiss.reset(byId(`${kind}-editor`));
     input(`${kind}-title`).value = row?.title || '';
     input(`${kind}-body`).value = row?.body || '';
     for (const channel of ['email', 'webhook', 'feishu']) input(`${kind}-${channel}`).checked = row?.channels?.includes(channel) || false;
     byId(`${kind}-preview`).innerHTML = row?.body_html || '<p class="content-muted">点击更新预览查看排版。</p>';
-    byId(`${kind}-editor-title`).textContent = `${row ? ui.runtime.canWrite() ? '编辑' : '查看' : '新建'}${kind === 'announcements' ? '公告' : '维护'}`;
+    const editable = this.canEdit(kind, row);
+    byId(`${kind}-editor`).dataset.dialogMode = editable ? 'edit' : 'view';
+    byId(`${kind}-editor-title`).textContent = `${editable ? row ? '编辑' : '新建' : '查看'}${kind === 'announcements' ? '公告' : '维护'}`;
+    byId(`${kind}-editor-help`).textContent = editable
+      ? '关闭按钮直接退出；点击遮罩后，2 秒内再次点击即可关闭。Esc 仅提示。'
+      : '当前配置仅供查看；点击遮罩、关闭按钮或按 Esc 退出。';
+    byId(`${kind}-editor`).querySelector('.btn-close').setAttribute('aria-label', '关闭对话框');
     if (kind === 'announcements') {
       input('announcements-pinned').checked = !!row?.pinned;
-      editor.querySelector('[name="publish"]').hidden = !!row;
     } else {
       await app.loadGroups();
       await app.loadMonitors();
@@ -265,9 +251,10 @@ const communications = {
         input(`maintenances-${option}`).disabled = locked;
       }
       byId('maintenances-locked-note').hidden = !locked;
-      editor.querySelector('button[type="submit"]').hidden = !!row && ['completed', 'cancelled'].includes(row.state);
       this.syncTimeFields();
     }
+    this.setEditorReadOnly(kind, !editable);
+    editor.querySelectorAll('button[type="submit"]').forEach(button => {button.hidden = !editable || (button.name === 'publish' && !!row);});
     ui.runtime.apply();
     byId(`${kind}-editor`).classList.add('active');
     editor.querySelector('.content-editor-body').scrollTop = 0;
@@ -275,6 +262,7 @@ const communications = {
   },
   async save(kind, submitter) {
     if (!ui.runtime.guardWrite() || this.saving) return;
+    if (byId(`${kind}-editor`).dataset.dialogMode !== 'edit') return;
     const editor = form(`${kind}-form`);
     if (!editor.reportValidity()) return;
     const row = this.editing[kind];
@@ -300,7 +288,7 @@ const communications = {
     this.savingEditor = kind;
     const sequence = this.editRequests[kind];
     this.editorError(kind);
-    this.resetCloseHint(kind);
+    ui.dialogDismiss.reset(byId(`${kind}-editor`));
     editor.setAttribute('aria-busy', 'true');
     const buttons = [...editor.querySelectorAll('button[type="submit"], [data-content-action="close"]')];
     buttons.forEach(button => {button.disabled = true;});
@@ -320,7 +308,7 @@ const communications = {
       this.saving = false;
       this.savingEditor = null;
       editor.removeAttribute('aria-busy');
-      this.resetCloseHint(kind);
+      ui.dialogDismiss.reset(byId(`${kind}-editor`));
       buttons.forEach(button => {button.disabled = false;});
       ui.runtime.apply();
     }

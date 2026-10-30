@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>概览浏览器验收</title>
+<style>
+  body { margin: 16px; font: 14px system-ui; color: #20352e; background: #f3f6f4; }
+  button { padding: 10px 20px; cursor: pointer; }
+  pre { white-space: pre-wrap; }
+  iframe { display: block; width: 1440px; height: 900px; border: 1px solid #bbc8c1; }
+</style>
+<h1>概览浏览器验收 · 200 条合成监控</h1>
+<p>先在同源管理页登录合成账号，再运行。所有修改仅作用于此 iframe 内存，刷新即可恢复。</p>
+<button id="run" type="button">运行验收</button>
+<button id="forms" type="button">交互预览新增与复制</button>
+<pre id="results" role="status">等待运行</pre>
+<iframe id="preview" src="/manage" title="隔离的管理概览"></iframe>
+<script type="module">
+  const frame = document.getElementById('preview');
+  const output = document.getElementById('results');
+  const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const assert = (value, message) => { if (!value) throw new Error(message); };
+  // 仅此测试页启用可写表单，所有写请求在 iframe 内拦截，服务端仍为只读模式。
+  function creationPreview(win) {
+    const app = win.eval('app'), ui = win.eval('ui');
+    const previous = {fetch: win.fetch, mode: ui.runtime.uiDevMode, monitors: app.monitors};
+    const preview = {writes: [], failNext: false, created: []};
+    win.fetch = async (url, options = {}) => {
+      const method = options.method || 'GET';
+      const route = new URL(String(url), win.location.href).pathname;
+      const json = (data, status = 200) => new win.Response(JSON.stringify(data), {status, headers: {'Content-Type': 'application/json'}});
+      if (method === 'POST' && route === '/api/monitors') {
+        const body = JSON.parse(options.body);
+        preview.writes.push({method, route, body});
+        if (preview.failNext) { preview.failNext = false; return json({error: '模拟保存失败'}, 500); }
+        const monitor = {...body, id: 201 + preview.created.length, enabled: 1, status: 'unknown'};
+        preview.created.push(monitor);
+        return json(monitor, 201);
+      }
+      if (method !== 'GET') {
+        preview.writes.push({method, route});
+        return json({error: '隔离预览不执行检测或其他写操作'}, 403);
+      }
+      if (route === '/api/monitors') return json([...previous.monitors, ...preview.created]);
+      return previous.fetch.call(win, url, options);
+    };
+    ui.runtime.uiDevMode = false;
+    ui.runtime.apply();
+    preview.restore = () => {
+      app.closeModal();
+      win.fetch = previous.fetch;
+      ui.runtime.uiDevMode = previous.mode;
+      app.monitors = previous.monitors;
+      app.renderList();
+      ui.runtime.apply();
+    };
+    return preview;
+  }
+  document.getElementById('forms').addEventListener('click', () => {
+    const app = frame.contentWindow.eval('app');
+    if (!app.hasLoadedMonitors) { output.textContent = '请先登录并等待监控加载。'; return; }
+    clearInterval(app.refreshInterval);
+    creationPreview(frame.contentWindow);
+    document.getElementById('forms').disabled = true;
+    document.getElementById('run').disabled = true;
+    frame.style.width = '100%';
+    output.textContent = '交互预览已开启：新增仅保存在此 iframe 内存，刷新本页恢复只读。';
+  });
+  document.getElementById('run').addEventListener('click', async () => {
+    const button = document.getElementById('run');
+    button.disabled = true;
+    output.textContent = '运行中…';
+    const win = frame.contentWindow;
+    const doc = frame.contentDocument;
+    const app = win.eval('app');
+    const ui = win.eval('ui');
+    const results = [];
+    const times = {};
+    let original, originalMotion;
+    const test = async (name, run) => { await run(); results.push(name); };
+    try {
+      const deadline = performance.now() + 15000;
+      while ((!app.hasLoadedMonitors || app.statusBarsState !== 'ready') && performance.now() < deadline) await pause(50);
+      assert(app.monitors.length === 200 && app.statusBarsState === 'ready', '需要登录且加载全部 200 条合成监控');
+      clearInterval(app.refreshInterval);
+      original = app.monitors;
+      originalMotion = ui.motion;
+      app.clearFilters();
+      app.collapsedGroups.clear();
+      app.renderList();
+      app.setMonitorLayout('rows', {persist: false, animate: false});
+      await pause(300);
+      const item = doc.querySelector('.monitor-item');
+      const id = Number(item.dataset.id);
+      const action = item.querySelector('[data-action="showHistory"]');
+      const nodes = [...doc.querySelectorAll('.monitor-item')];
+      await test('200 条监控与每条 24 个小时元素，无 288 个分段子节点', () => {
+        assert(nodes.length === 200, '监控数量');
+        assert(nodes.every(node => node.querySelectorAll('.monitor-status-bar > .status-bar-group').length === 24), '小时数量');
+        assert(!doc.querySelector('.monitor-status-bar .status-bar-segment'), '状态条仍包含细分 DOM');
+      });
+      await test('渐变保留十二段边界、维护和空白；时间提示与名称属性安全', () => {
+        const hour = {...original[0].statusBar24h[0], segments: ['up', 'up', 'down', 'warning', 'maintenance', null, ...Array(6).fill('up')],
+          message: '<img src=x> "引号" & 文本'};
+        const template = doc.createElement('template');
+        template.innerHTML = app.renderStatusBar24h([hour]);
+        const bar = template.content.querySelector('.status-bar-group');
+        const style = bar.getAttribute('style');
+        for (const token of ['16.667%', '25.000%', '41.667%', '--status-down', '--status-warning', '--accent', '--status-empty-bar']) {
+          assert(style.includes(token), `渐变缺少 ${token}`);
+        }
+        assert(bar.title.includes(hour.message) && !template.content.querySelector('img'), '状态条提示转义');
+        assert(app.computeStatusBarSignature([hour]) !== app.computeStatusBarSignature([{...hour, endTime: '2099-01-01T00:00:00Z'}]), '同色状态条时间未纳入更新');
+        const name = '带 "引号" 与 <标签> 的服务';
+        template.innerHTML = app.renderMonitorItem({...original[0], name});
+        assert(template.content.querySelector('.monitor-name').title === name, '名称属性转义');
+      });
+      await test('1440×900 行高 76–88px，首屏至少四条完整监控', () => {
+        const footer = doc.querySelector('.workspace-footer').getBoundingClientRect().top;
+        const visible = nodes.filter(node => { const r = node.getBoundingClientRect(); return r.top >= 70 && r.bottom <= footer; });
+        assert(visible.length >= 4, `首屏只有 ${visible.length} 条`);
+        assert(item.offsetHeight >= 76 && item.offsetHeight <= 88, `行高 ${item.offsetHeight}`);
+      });
+      await test('真实轮询复用全部节点并保留操作按钮焦点', async () => {
+        action.focus();
+        await app.loadMonitors();
+        assert(nodes.every(node => node === doc.querySelector(`.monitor-item[data-id="${node.dataset.id}"]`)), '轮询替换了监控节点');
+        assert(doc.activeElement === action, '轮询丢失焦点');
+      });
+      await test('数值和状态局部刷新，未变化的监控没有 DOM 写入', async () => {
+        const untouched = nodes[1];
+        const mutations = [];
+        const observer = new win.MutationObserver(records => mutations.push(...records));
+        observer.observe(untouched, {attributes: true, childList: true, characterData: true, subtree: true});
+        app.monitors = app.monitors.map(m => m.id === id ? {...m, last_response_time: 0, p99_response_24h: 123, status: 'warning'} : m);
+        const start = performance.now();
+        app.renderList();
+        times.incrementalRefreshMs = +(performance.now() - start).toFixed(2);
+        await pause(0);
+        observer.disconnect();
+        assert(item === doc.querySelector(`.monitor-item[data-id="${id}"]`), '数值刷新替换整项');
+        assert(item.querySelector('.monitor-stat-value').textContent === '0 ms', '零毫秒丢失');
+        assert(item.querySelectorAll('.monitor-stat-value')[2].textContent === '123 ms', 'P99 未更新');
+        assert(item.classList.contains('warning') && doc.activeElement === action, '状态或焦点错误');
+        assert(!mutations.length, '未变化的监控发生 DOM 写入');
+      });
+      await test('视图切换复用节点，快速切换动画有界且只使用位移和透明度', async () => {
+        const start = performance.now();
+        for (const layout of ['cards', 'rows', 'cards']) app.setMonitorLayout(layout, {persist: false});
+        times.threeSwitchesMs = +(performance.now() - start).toFixed(2);
+        assert(doc.querySelector(`.monitor-item[data-id="${id}"]`) === item, '切换重建节点');
+        assert(doc.activeElement === action, '程序化切换丢失原焦点');
+        assert(app.overviewAnimations.size <= 20, '同时动画超过 20 项');
+        for (const animation of app.overviewAnimations) {
+          for (const keyframe of animation.effect.getKeyframes()) {
+            assert(Object.keys(keyframe).every(key => ['opacity', 'transform', 'offset', 'computedOffset', 'easing', 'composite'].includes(key)), '动画包含布局或绘制属性');
+          }
+        }
+        const longTasks = [];
+        const observer = new win.PerformanceObserver(list => longTasks.push(...list.getEntries()));
+        observer.observe({entryTypes: ['longtask']});
+        const animationStart = win.performance.now();
+        // 后台浏览器可能延迟派发 finish；检查最终释放，而非假设计时器与合成帧同步。
+        const deadline = performance.now() + 2000;
+        while (app.overviewAnimations.size && performance.now() < deadline) await pause(50);
+        observer.disconnect();
+        times.animationLongTasks = longTasks.filter(entry => entry.startTime >= animationStart).length;
+        times.animationLongTaskDetails = longTasks.filter(entry => entry.startTime >= animationStart)
+          .map(entry => ({afterStartMs: +(entry.startTime - animationStart).toFixed(2), durationMs: entry.duration,
+            attribution: entry.attribution.map(item => ({name: item.name, container: item.containerType}))}));
+        assert(times.animationLongTasks === 0, '动画阶段存在超过 50ms 的长任务');
+        assert(app.overviewAnimations.size === 0, '动画未清理：' + JSON.stringify([...app.overviewAnimations].map(a => ({state: a.playState, time: a.currentTime}))));
+        assert(item.offsetHeight >= 180 && item.offsetHeight <= 200, `卡片高度 ${item.offsetHeight}`);
+      });
+      await test('折叠维护 inert/aria，内部焦点回到分组标题', () => {
+        const section = item.closest('.group-section');
+        action.focus();
+        app.toggleGroup(Number(section.dataset.groupId));
+        assert(section.querySelector('.group-body').inert, '折叠后仍可聚焦');
+        assert(section.querySelector('.group-header').getAttribute('aria-expanded') === 'false', '折叠语义');
+        assert(doc.activeElement === section.querySelector('.group-header'), '折叠焦点');
+        app.toggleGroup(Number(section.dataset.groupId));
+      });
+      await test('暂停与维护标签、操作图标随数据更新', () => {
+        app.monitors = app.monitors.map(m => m.id === id ? {...m, enabled: 0} : m);
+        app.renderList();
+        assert(item.classList.contains('paused'), '暂停样式');
+        assert(item.querySelector('[data-action="toggleMonitor"]').getAttribute('aria-label') === '恢复检测', '恢复操作标签');
+        app.monitors = app.monitors.map(m => m.id === id ? {...m, enabled: 1, maintenance: {active: true}} : m);
+        app.renderList();
+        assert(item.classList.contains('maintenance') && item.querySelector('.monitor-state-label').textContent === '维护中', '维护状态');
+      });
+      await test('跨组移动复用节点，移除聚焦项后回到搜索框', () => {
+        action.focus();
+        app.monitors = app.monitors.map(m => m.id === id ? {...m, group_id: 2} : m);
+        app.renderList();
+        assert(item.closest('.group-section').dataset.groupId === '2' && doc.activeElement === action, '跨组移动');
+        app.monitors = app.monitors.filter(m => m.id !== id);
+        app.renderList();
+        assert(doc.activeElement === doc.getElementById('monitor-search'), '移除后焦点');
+      });
+      await test('搜索、无结果、空列表与清除筛选可恢复', () => {
+        app.monitors = original;
+        const search = doc.getElementById('monitor-search');
+        search.value = '不会匹配的服务';
+        search.dispatchEvent(new win.Event('input', {bubbles: true}));
+        assert(doc.querySelector('#monitor-list .empty-state'), '无结果提示');
+        app.clearFilters();
+        app.monitors = [];
+        app.renderList();
+        assert(doc.querySelector('#monitor-list .empty-state [data-ui-write]'), '首次添加入口未标记只读保护');
+        app.monitors = original;
+        app.renderList();
+        assert(doc.querySelectorAll('.monitor-item').length === 200, '恢复监控');
+      });
+      await test('减少动态效果时不创建监控动画', () => {
+        app.cancelOverviewAnimations();
+        ui.motion = {matches: true};
+        app.setMonitorLayout('cards', {persist: false});
+        app.setMonitorLayout('rows', {persist: false});
+        app.animateNextList = true;
+        app.renderList();
+        assert(app.overviewAnimations.size === 0, '减少动态效果仍创建动画');
+        ui.motion = originalMotion;
+      });
+      await test('只读模式禁止复制及分组添加，直接调用同样受保护', async () => {
+        await pause(0);
+        const buttons = [...doc.querySelectorAll('[data-action="copyMonitor"], .group-add-monitor')];
+        assert(buttons.length > 200 && buttons.every(button => button.disabled), '新增入口未禁用');
+        app.copyMonitor(original[0].id);
+        app.showAddModal(1);
+        assert(!doc.getElementById('monitor-modal').classList.contains('active'), '只读模式打开了新增表单');
+      });
+      const creation = creationPreview(win);
+      try {
+        const field = name => doc.getElementById(`monitor-${name}`);
+        const close = async () => { app.closeModal(); await pause(0); };
+        const source = {...original[0], name: '带 "引号" 的源监控', group_id: 2, expected_status: 0,
+          interval_seconds: 360, timeout_seconds: 23, retries: 0, auth_username: 'fixture-user',
+          auth_password_set: true, is_public: 0, email_notification: true, webhook_notification: false,
+          feishu_notification: 1, enabled: 0, maintenance: {active: true}};
+        app.monitors = original.map(m => m.id === source.id ? source : m);
+        app.renderList();
+        await test('HTTP 复制预填所有配置，保留零值和开关，清空 ID 及认证密码', async () => {
+          const copy = doc.querySelector(`.monitor-item[data-id="${source.id}"] [data-action="copyMonitor"]`);
+          copy.focus(); copy.click(); await pause(0);
+          assert(doc.getElementById('modal-title').textContent.trim() === '复制监控', '复制标题');
+          assert(field('name').value === `${source.name}（副本）` && field('target').value === source.target, '名称或地址');
+          for (const [name, expected] of Object.entries({type: 'http', group: '2', interval: '360', timeout: '23', retries: '0', 'expected-status': '0', 'auth-username': 'fixture-user'})) {
+            assert(field(name).value === expected, `${name} 复制错误`);
+          }
+          for (const [name, checked] of Object.entries({'is-public': false, 'email-notification': true, 'webhook-notification': false, 'feishu-notification': true})) {
+            assert(field(name).checked === checked, `${name} 开关错误`);
+          }
+          assert(app.editingId === null && field('id').value === '', '复制保留源 ID');
+          assert(field('auth-password').value === '' && !field('copy-password-hint').hidden, '密码或提示');
+          assert(field('auth-password').getAttribute('aria-describedby') === 'monitor-copy-password-hint', '密码提示未关联');
+          assert(!creation.writes.length, '打开复制已发送写请求');
+          await close();
+          assert(doc.activeElement === copy, '关闭复制后未恢复焦点');
+        });
+        await test('复制后普通新增与编辑重置提示，编辑仍保留零状态码', async () => {
+          app.showAddModal();
+          assert(field('name').value === '' && field('group').value === '' && field('auth-username').value === '', '普通新增残留源配置');
+          assert(field('copy-password-hint').hidden && !field('auth-password').hasAttribute('aria-describedby'), '普通新增残留提示');
+          await close();
+          app.editMonitor(source.id);
+          assert(app.editingId === source.id && field('id').value === String(source.id), '编辑 ID');
+          assert(field('expected-status').value === '0' && field('copy-password-hint').hidden, '编辑回填错误');
+          assert(field('auth-password').placeholder.includes('留空不修改'), '编辑密码语义改变');
+          await close();
+        });
+        await test('TCP 与 Ping 复制使用对应字段，密码提示不会串到下一份副本', async () => {
+          for (const type of ['tcp', 'ping']) {
+            app.monitors = original.map(m => m.id === source.id ? {...source, type, port: type === 'tcp' ? 3306 : null, auth_password_set: false} : m);
+            app.copyMonitor(source.id);
+            assert(field('type').value === type && field('port').value === (type === 'tcp' ? '3306' : ''), '协议或端口');
+            assert(doc.getElementById('port-group').style.display === (type === 'tcp' ? 'block' : 'none'), '端口显隐');
+            assert(doc.getElementById('auth-group').style.display === 'none' && field('copy-password-hint').hidden, '认证显隐');
+            await close();
+          }
+          app.monitors = original;
+          app.renderList();
+        });
+        await test('所有分组含空分组和未分组均可在折叠时添加，关闭恢复按钮焦点', async () => {
+          const sections = [...doc.querySelectorAll('.group-section')];
+          assert(sections.some(section => section.dataset.groupId === '0') && sections.some(section => section.querySelector('.empty-group-message')), '缺少空分组测试数据');
+          for (const section of sections) {
+            const groupId = Number(section.dataset.groupId), add = section.querySelector('.group-add-monitor');
+            assert(!add.closest('.group-header'), '添加按钮嵌套在折叠按钮');
+            app.toggleGroup(groupId);
+            add.focus(); add.click(); await pause(0);
+            assert(field('group').value === (groupId ? String(groupId) : ''), '未预选所属分组');
+            assert(section.classList.contains('collapsed') && section.querySelector('.group-header').getAttribute('aria-expanded') === 'false', '添加误触折叠');
+            await close();
+            assert(doc.activeElement === add, '关闭分组新增后焦点错误');
+            app.toggleGroup(groupId);
+          }
+        });
+        await test('从筛选后的分组添加不改变搜索和分组条件', async () => {
+          app.searchQuery = original[0].name.toLowerCase();
+          app.groupFilter = String(original[0].group_id);
+          app.renderList();
+          doc.querySelector('.group-add-monitor').click(); await pause(0);
+          assert(app.searchQuery === original[0].name.toLowerCase() && app.groupFilter === String(original[0].group_id), '筛选被重置');
+          await close();
+          app.clearFilters();
+        });
+        await test('复制保存失败可重试，POST 创建独立启用监控且不修改源数据', async () => {
+          app.monitors = original.map(m => m.id === source.id ? source : m);
+          const before = JSON.stringify(source);
+          app.copyMonitor(source.id); await pause(0);
+          field('name').value = '可编辑的副本';
+          field('auth-password').value = 'synthetic-copy-password';
+          creation.failNext = true;
+          await app.saveMonitor(new win.Event('submit', {cancelable: true}));
+          assert(doc.getElementById('monitor-modal').classList.contains('active') && field('name').value === '可编辑的副本', '失败丢失表单');
+          await app.saveMonitor(new win.Event('submit', {cancelable: true}));
+          const request = creation.writes[1];
+          assert(request.method === 'POST' && request.route === '/api/monitors', '复制误走编辑接口');
+          assert(request.body.name === '可编辑的副本' && request.body.expected_status === 0 && request.body.auth_password === 'synthetic-copy-password', '新增请求配置错误');
+          assert(['id', 'enabled', 'status', 'maintenance', 'statusBar24h', 'auth_password_set'].every(key => !(key in request.body)), '新增请求携带源状态');
+          assert(creation.created.length === 1 && creation.created[0].id !== source.id && creation.created[0].enabled === 1, '副本身份或启用状态');
+          assert(JSON.stringify(source) === before && !doc.getElementById('monitor-modal').classList.contains('active'), '源数据改变或弹窗未关闭');
+          await pause(400);
+          assert(creation.writes[2]?.route === '/api/monitors/201/check', '新增检测错误引用源监控');
+        });
+      } finally {
+        creation.restore();
+      }
+      output.textContent = JSON.stringify({passed: results.length, checks: results, timings: times}, null, 2);
+      output.dataset.result = 'passed';
+    } catch (error) {
+      output.textContent = JSON.stringify({passed: results.length, checks: results, timings: times, error: error.stack}, null, 2);
+      output.dataset.result = 'failed';
+    } finally {
+      if (original) {
+        ui.motion = originalMotion;
+        app.monitors = original;
+        app.clearFilters();
+        app.setMonitorLayout('rows', {persist: false});
+        app.startAutoRefresh();
+      }
+      button.disabled = false;
+    }
+  });
+</script>
+</html>

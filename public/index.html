@@ -181,12 +181,11 @@
       </div></header>
 
       <main class="main-content" id="main-content" tabindex="-1">
-        <section class="workspace-view" id="overview-view" data-workspace-view="overview" aria-labelledby="overview-heading">
+        <section class="workspace-view" id="overview-view" data-workspace-view="overview" data-monitor-layout="rows" aria-labelledby="overview-heading">
         <div class="page-heading"><div><div class="eyebrow">YOUR SERVICES, AT A GLANCE</div><h1 id="overview-heading" tabindex="-1">监控概览<span class="heading-dot">.</span></h1><p>一眼掌握服务状态，安心专注重要的事。</p></div><button class="btn-primary btn-add-monitor" data-ui-write onclick="app.showAddModal()" title="添加监控"><span class="btn-icon-inline" id="btn-icon-add"></span><span>添加监控</span></button></div>
         <section class="health-banner" id="health-banner" data-state="loading" aria-live="polite">
         <div class="health-symbol" id="health-symbol"><span data-ui-icon="activity"></span></div>
         <div class="health-copy"><div class="eyebrow">SYSTEM STATUS</div><h2 id="health-title">正在读取服务状态</h2><p id="health-description">连接服务，收集最新的检测结果。</p></div>
-        <div class="health-visual" aria-hidden="true"><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit-core"><span data-ui-icon="activity"></span></div><span class="orbit-dot"></span></div>
       </section>
         <section class="stats-row" aria-label="监控统计">
           <div class="stat-card"><span class="stat-label"><span class="stat-icon" id="stat-icon-total"></span>总监控</span><span class="stat-value" id="stat-total">—</span><span class="stat-caption">所有监控项目</span></div>
@@ -197,7 +196,7 @@
         </section>
         <section class="monitors-section" aria-label="监控服务">
           <div class="section-heading"><div><h2>监控服务 <span class="section-count" id="monitor-result-count">0</span></h2><span class="sync-label" id="last-sync">等待首次同步</span></div><button class="btn-secondary" data-ui-write onclick="app.refreshAll()" id="btn-refresh" title="全部检测"><span data-ui-icon="refresh"></span><span>全部检测</span></button></div>
-          <div class="monitor-toolbar"><label class="search-field" for="monitor-search"><span data-ui-icon="search"></span><input type="search" id="monitor-search" placeholder="搜索监控名称或地址…" autocomplete="off"><kbd>/</kbd></label><label class="group-filter-label" for="group-filter"><span data-ui-icon="folder"></span><select id="group-filter" aria-label="按分组筛选"><option value="all">所有分组</option></select></label></div>
+          <div class="monitor-toolbar"><label class="search-field" for="monitor-search"><span data-ui-icon="search"></span><input type="search" id="monitor-search" placeholder="搜索监控名称或地址…" autocomplete="off"><kbd>/</kbd></label><label class="group-filter-label" for="group-filter"><span data-ui-icon="folder"></span><select id="group-filter" aria-label="按分组筛选"><option value="all">所有分组</option></select></label><div class="monitor-view-switch" role="group" aria-label="监控显示方式"><button type="button" data-monitor-layout="rows" aria-pressed="true" aria-controls="monitor-list"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1"/></svg><span>行列表</span></button><button type="button" data-monitor-layout="cards" aria-pressed="false" aria-controls="monitor-list"><span data-ui-icon="grid"></span><span>卡片</span></button></div></div>
           <div class="monitor-filter-row"><div class="filter-tabs" aria-label="按监控状态筛选"><button class="filter-tab active" type="button" data-filter="all" aria-pressed="true">全部<span data-filter-count="all">0</span></button><button class="filter-tab" type="button" data-filter="up" aria-pressed="false">正常<span data-filter-count="up">0</span></button><button class="filter-tab" type="button" data-filter="down" aria-pressed="false">离线<span data-filter-count="down">0</span></button><button class="filter-tab" type="button" data-filter="warning" aria-pressed="false">波动<span data-filter-count="warning">0</span></button><button class="filter-tab" type="button" data-filter="unknown" aria-pressed="false">待检测<span data-filter-count="unknown">0</span></button><button class="filter-tab" type="button" data-filter="maintenance" aria-pressed="false">维护<span data-filter-count="maintenance">0</span></button><button class="filter-tab" type="button" data-filter="paused" aria-pressed="false">暂停<span data-filter-count="paused">0</span></button></div><div class="status-legend" aria-label="状态条图例"><span><i class="legend-dot up"></i>正常</span><span><i class="legend-dot warning"></i>波动</span><span><i class="legend-dot down"></i>离线</span><span><i class="legend-dot maintenance"></i>维护</span><span><i class="legend-dot empty"></i>无数据</span></div></div>
           <div class="monitor-list" id="monitor-list"><div class="loading-state"><span class="loading-spinner"></span><p>正在连接你的服务…</p></div></div>
         </section>
@@ -601,6 +600,7 @@
             <div class="form-group">
               <label for="monitor-auth-password">密码</label>
               <input type="password" id="monitor-auth-password" placeholder="密码">
+              <p class="form-hint" id="monitor-copy-password-hint" hidden>原密码不会复制，请重新输入</p>
             </div>
           </div>
         </div>
@@ -667,7 +667,7 @@
             <span class="detail-target" id="detail-target"></span>
           </div>
         </div>
-        <button class="btn-close" onclick="app.closeDetailModal()">×</button>
+        <button class="btn-close" onclick="ui.dialogDismiss.request('detail-modal')">×</button>
       </div>
 
       <div class="detail-content" id="detail-content">
@@ -697,7 +697,7 @@
             <span class="detail-info-label"><span class="detail-icon" id="detail-icon-last-check"></span> 最后检测</span>
             <span class="detail-info-value" id="detail-last-check">-</span>
           </div>
-          <div class="detail-info-item ssl-cert-only-desktop" id="detail-ssl-days-row" style="display: none;">
+          <div class="detail-info-item" id="detail-ssl-days-row" style="display: none;">
             <span class="detail-info-label"><span class="detail-icon" id="detail-icon-ssl"></span> SSL 证书</span>
             <span class="detail-info-value" id="detail-ssl-days">-</span>
           </div>
