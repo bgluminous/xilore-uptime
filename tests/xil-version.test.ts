@@ -120,6 +120,64 @@ function resolveShell(): string | null {
   return fs.existsSync(sibling) ? sibling : null;
 }
 
+for (const scenario of [
+  {name: '相对工作区按 HOME 解析', project: 'relative', status: 0, cleaned: true},
+  {name: '绝对工作区不依赖 HOME', project: 'absolute', home: '', status: 0, cleaned: true},
+  {name: '非 GitLab CI 不清理', project: 'absolute', ci: 'false', status: 0},
+  {name: '拒绝空工作区', project: 'empty', status: 2},
+  {name: '拒绝根目录', project: 'root', status: 2},
+  {name: '拒绝不存在的工作区', project: 'missing', status: 2},
+  {name: '相对工作区缺少 HOME 时拒绝清理', project: 'relative', home: '', status: 2},
+  {name: '相对工作区拒绝非绝对 HOME', project: 'relative', home: 'relative-home', status: 2},
+  {name: '拒绝与当前目录不符的工作区', project: 'other', status: 2},
+  {name: '拒绝从其它目录清理', project: 'absolute', otherCwd: true, status: 2},
+  {name: '拒绝清理脚本所属项目之外的目录', project: 'other', otherCwd: true, status: 2}
+]) {
+  await test(`CI 清理：${scenario.name}`, () => {
+    const shell = resolveShell(); assert.ok(shell, '需要 POSIX sh；可通过 TEST_SH 指定');
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'uptime-ci-cleanup-'));
+    const runnerHome = path.join(temp, 'runner home');
+    const relativeProject = 'builds/runner/0/example/project with spaces';
+    const workspace = path.join(runnerHome, relativeProject);
+    const other = path.join(runnerHome, 'other');
+    const script = path.join(workspace, 'scripts/version-publish/clean-ci-workspace.sh');
+    const env = {...process.env, PATH: [path.dirname(shell), process.env.PATH].join(path.delimiter)};
+    try {
+      fs.mkdirSync(path.dirname(script), {recursive: true});
+      fs.mkdirSync(path.join(workspace, 'release-out'), {recursive: true});
+      fs.mkdirSync(other);
+      fs.copyFileSync('scripts/version-publish/clean-ci-workspace.sh', script);
+      fs.writeFileSync(path.join(workspace, 'release-out/release.json'), 'artifact');
+      fs.writeFileSync(path.join(workspace, 'source.txt'), 'source');
+      fs.writeFileSync(path.join(workspace, '.hidden'), 'hidden');
+      fs.writeFileSync(path.join(workspace, '..hidden'), 'hidden');
+      fs.writeFileSync(path.join(other, 'keep.txt'), 'outside');
+      const resolveHome = spawnSync(shell, ['-c', 'CDPATH= cd -P "$1" && pwd -P',
+        'sh', runnerHome.replaceAll('\\', '/')], {encoding: 'utf8', env});
+      assert.equal(resolveHome.status, 0, resolveHome.stderr || resolveHome.stdout);
+      const shellHome = resolveHome.stdout.trim();
+      const projectDirs: Record<string, string> = {
+        relative: relativeProject, absolute: `${shellHome}/${relativeProject}`,
+        empty: '', root: '/', missing: `${shellHome}/missing`, other: `${shellHome}/other`
+      };
+      const cwd = scenario.otherCwd ? other : workspace;
+      const result = spawnSync(shell, [path.relative(cwd, script).replaceAll('\\', '/')], {
+        cwd, encoding: 'utf8', env: {...env, GITLAB_CI: scenario.ci ?? 'true',
+          HOME: scenario.home ?? shellHome, CI_PROJECT_DIR: projectDirs[scenario.project]}
+      });
+      assert.equal(result.status, scenario.status, result.stderr || result.stdout);
+      assert.equal(fs.readFileSync(path.join(workspace, 'release-out/release.json'), 'utf8'), 'artifact');
+      assert.equal(fs.readFileSync(path.join(other, 'keep.txt'), 'utf8'), 'outside');
+      assert.deepEqual(fs.readdirSync(workspace).sort(), scenario.cleaned
+        ? ['release-out'] : ['..hidden', '.hidden', 'release-out', 'scripts', 'source.txt']);
+    } finally {
+      assert.equal(path.dirname(path.resolve(temp)), path.resolve(os.tmpdir()));
+      assert.ok(path.basename(temp).startsWith('uptime-ci-cleanup-'));
+      fs.rmSync(temp, {recursive: true, force: true});
+    }
+  });
+}
+
 await test('发布 JSON 从权威版本源生成且不打印下载地址', () => {
   const shell = resolveShell();
   assert.ok(shell, '需要 POSIX sh；可通过 TEST_SH 指定');
